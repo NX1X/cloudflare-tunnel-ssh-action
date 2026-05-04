@@ -108,8 +108,8 @@ runs:
         SSH_KEY_PATH: ${{ inputs.ssh-key-path }}
       run: |
         KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
-        printf '%s\n' "$INPUT_SSH_PRIVATE_KEY" > "$KEY_PATH"
-        chmod 600 "$KEY_PATH"
+        install -m 600 /dev/null "$KEY_PATH"
+        echo "$INPUT_SSH_PRIVATE_KEY" > "$KEY_PATH"
 
     # -------------------------------------------------------------------------
     # 4. Create cloudflared wrapper script with embedded service token credentials
