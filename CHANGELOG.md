@@ -19,7 +19,7 @@ _No unreleased changes._
 - Install `cloudflared` from GitHub releases (latest or pinned version)
 - Write SSH private key with correct permissions (`chmod 600`)
 - Create wrapper script embedding `TUNNEL_SERVICE_TOKEN_ID` / `TUNNEL_SERVICE_TOKEN_SECRET` at write-time (bypasses ProxyCommand subprocess env var propagation issue)
-- Configure `~/.ssh/config` with ProxyCommand, `IdentityFile`, timeouts, and keep-alive settings
+- Configure `~/.ssh/config` with ProxyCommand, timeouts, and keep-alive settings
 - Verify step: print cloudflared version, key fingerprint, redacted wrapper script, SSH config entry
 - Optional connection test (`test-connection: true` by default)
 - Inputs: `cf-access-client-id`, `cf-access-client-secret`, `ssh-private-key`, `ssh-host`, `ssh-user`, `cloudflared-version`, `ssh-key-path`, `connect-timeout`, `server-alive-interval`, `test-connection`
