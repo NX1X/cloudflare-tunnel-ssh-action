@@ -85,9 +85,11 @@ jobs:
           fi
           TAG="v${VERSION_INPUT}"
           MAJOR="v$(echo "$VERSION_INPUT" | cut -d. -f1)"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version_num=${VERSION_INPUT}" >> "$GITHUB_OUTPUT"
-          echo "major=${MAJOR}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${TAG}"
+            echo "version_num=${VERSION_INPUT}"
+            echo "major=${MAJOR}"
+          } >> "$GITHUB_OUTPUT"
           echo "Tag: $TAG | Version: $VERSION_INPUT | Major: $MAJOR"
 
       - name: Check tag does not already exist

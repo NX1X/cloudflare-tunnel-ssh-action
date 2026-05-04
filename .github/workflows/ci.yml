@@ -35,25 +35,41 @@ jobs:
           echo "=== Checking required files ==="
           for f in action.yml README.md LICENSE CHANGELOG.md; do
             if [ -f "$f" ]; then
-              echo "  ✓ $f"
+              echo "  ok $f"
             else
-              echo "  ✗ $f - MISSING"
+              echo "  MISSING $f"
               exit 1
             fi
           done
 
           echo ""
           echo "=== Checking action.yml has required fields ==="
-          grep -q "^name:" action.yml        && echo "  ✓ name" || { echo "  ✗ name missing"; exit 1; }
-          grep -q "^description:" action.yml && echo "  ✓ description" || { echo "  ✗ description missing"; exit 1; }
-          grep -q "^author:" action.yml      && echo "  ✓ author" || { echo "  ✗ author missing"; exit 1; }
-          grep -q "^runs:" action.yml        && echo "  ✓ runs" || { echo "  ✗ runs missing"; exit 1; }
+          failed=0
+          for field in name description author runs; do
+            if grep -q "^${field}:" action.yml; then
+              echo "  ok ${field}"
+            else
+              echo "  MISSING ${field}"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then exit 1; fi
 
           echo ""
           echo "=== Checking wrapper script uses correct env var names ==="
-          grep -q "TUNNEL_SERVICE_TOKEN_ID" action.yml     && echo "  ✓ TUNNEL_SERVICE_TOKEN_ID present" || { echo "  ✗ TUNNEL_SERVICE_TOKEN_ID missing"; exit 1; }
-          grep -q "TUNNEL_SERVICE_TOKEN_SECRET" action.yml && echo "  ✓ TUNNEL_SERVICE_TOKEN_SECRET present" || { echo "  ✗ TUNNEL_SERVICE_TOKEN_SECRET missing"; exit 1; }
-          ! grep -q "CF_ACCESS_CLIENT_ID" action.yml       && echo "  ✓ No incorrect CF_ACCESS_CLIENT_ID in wrapper" || echo "  ⚠ CF_ACCESS_CLIENT_ID found - verify it is not used as a cloudflared env var"
+          for var in TUNNEL_SERVICE_TOKEN_ID TUNNEL_SERVICE_TOKEN_SECRET; do
+            if grep -q "$var" action.yml; then
+              echo "  ok ${var} present"
+            else
+              echo "  MISSING ${var}"
+              exit 1
+            fi
+          done
+          if grep -q "CF_ACCESS_CLIENT_ID" action.yml; then
+            echo "  WARN CF_ACCESS_CLIENT_ID found - verify it is not used as a cloudflared env var"
+          else
+            echo "  ok No incorrect CF_ACCESS_CLIENT_ID in wrapper"
+          fi
 
           echo ""
           echo "All checks passed."
