@@ -1,5 +1,5 @@
 name: 'Cloudflare Tunnel SSH Setup'
-description: 'Install cloudflared and configure SSH through a Cloudflare Tunnel using a service token - zero-trust CI/CD access without exposing port 22'
+description: 'Set up SSH via Cloudflare Tunnel with cloudflared - zero-trust access without exposing port 22'
 author: 'NX1X'
 
 branding:
