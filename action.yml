@@ -148,15 +148,12 @@ runs:
       shell: bash
       env:
         SSH_HOST: ${{ inputs.ssh-host }}
-        SSH_KEY_PATH: ${{ inputs.ssh-key-path }}
         CONNECT_TIMEOUT: ${{ inputs.connect-timeout }}
         SERVER_ALIVE_INTERVAL: ${{ inputs.server-alive-interval }}
       run: |
-        KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
         {
           printf 'Host %s\n' "$SSH_HOST"
           printf '  StrictHostKeyChecking no\n'
-          printf '  IdentityFile %s\n' "$KEY_PATH"
           printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
           printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
           printf '  ServerAliveCountMax 4\n'
