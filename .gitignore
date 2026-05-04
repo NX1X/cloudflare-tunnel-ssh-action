@@ -41,3 +41,6 @@ assets/
 
 # Local dev notes (personal scratch, not for commit)
 docs/
+
+# GitHub Copilot / IDE instructions (local only)
+.github/instructions/
