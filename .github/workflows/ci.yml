@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: |
+          ACTIONLINT_VERSION="1.7.7"
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
+          tar xzf /tmp/actionlint.tar.gz -C /tmp
+          sudo mv /tmp/actionlint /usr/local/bin/
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run actionlint (validates action YAML + shell scripts)
+        run: actionlint
+
+      - name: Validate action.yml structure
+        run: |
+          echo "=== Checking required files ==="
+          for f in action.yml README.md LICENSE CHANGELOG.md; do
+            if [ -f "$f" ]; then
+              echo "  ✓ $f"
+            else
+              echo "  ✗ $f - MISSING"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=== Checking action.yml has required fields ==="
+          grep -q "^name:" action.yml        && echo "  ✓ name" || { echo "  ✗ name missing"; exit 1; }
+          grep -q "^description:" action.yml && echo "  ✓ description" || { echo "  ✗ description missing"; exit 1; }
+          grep -q "^author:" action.yml      && echo "  ✓ author" || { echo "  ✗ author missing"; exit 1; }
+          grep -q "^runs:" action.yml        && echo "  ✓ runs" || { echo "  ✗ runs missing"; exit 1; }
+
+          echo ""
+          echo "=== Checking wrapper script uses correct env var names ==="
+          grep -q "TUNNEL_SERVICE_TOKEN_ID" action.yml     && echo "  ✓ TUNNEL_SERVICE_TOKEN_ID present" || { echo "  ✗ TUNNEL_SERVICE_TOKEN_ID missing"; exit 1; }
+          grep -q "TUNNEL_SERVICE_TOKEN_SECRET" action.yml && echo "  ✓ TUNNEL_SERVICE_TOKEN_SECRET present" || { echo "  ✗ TUNNEL_SERVICE_TOKEN_SECRET missing"; exit 1; }
+          ! grep -q "CF_ACCESS_CLIENT_ID" action.yml       && echo "  ✓ No incorrect CF_ACCESS_CLIENT_ID in wrapper" || echo "  ⚠ CF_ACCESS_CLIENT_ID found - verify it is not used as a cloudflared env var"
+
+          echo ""
+          echo "All checks passed."

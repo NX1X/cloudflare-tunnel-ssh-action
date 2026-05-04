@@ -1,0 +1,43 @@
+# OS
+.DS_Store
+desktop.ini
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Node (if tooling is added later)
+node_modules/
+npm-debug.log*
+
+# Logs
+*.log
+
+# Local test overrides
+.env
+.env.local
+
+# Private keys and certificates - never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+id_rsa
+id_ed25519
+id_ecdsa
+
+# Assets (local reference images/icons, not part of the action)
+assets/
+
+# Local dev notes (personal scratch, not for commit)
+docs/

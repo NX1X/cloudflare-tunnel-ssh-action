@@ -1,0 +1,56 @@
+name: Test Action
+
+# =============================================================================
+# Manual smoke-test for cloudflare-tunnel-ssh-action.
+# Requires a real Cloudflare Tunnel and SSH server.
+#
+# Required secrets (set in repository settings):
+#   CF_ACCESS_CLIENT_ID      - service token Client ID
+#   CF_ACCESS_CLIENT_SECRET  - service token Client Secret
+#   SSH_PRIVATE_KEY          - Ed25519 private key
+#   SERVER_SSH_HOST          - tunnel SSH hostname (e.g. ssh.example.com)
+#   DEPLOY_USER              - SSH username
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      cloudflared-version:
+        description: 'cloudflared version to test (leave blank for latest)'
+        required: false
+        default: 'latest'
+      test-connection:
+        description: 'Run SSH connection test'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Cloudflare Tunnel SSH
+        uses: ./   # Test the local action
+        with:
+          cf-access-client-id:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          cf-access-client-secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          ssh-private-key:         ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh-host:                ${{ secrets.SERVER_SSH_HOST }}
+          ssh-user:                ${{ secrets.DEPLOY_USER }}
+          cloudflared-version:     ${{ inputs.cloudflared-version }}
+          test-connection:         ${{ inputs.test-connection }}
+
+      - name: Run a remote command
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_SSH_HOST }}
+        run: |
+          ssh "${DEPLOY_USER}@${SERVER_HOST}" "echo 'Remote command OK' && whoami && uptime"

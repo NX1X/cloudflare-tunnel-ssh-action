@@ -1,0 +1,211 @@
+name: 'Cloudflare Tunnel SSH Setup'
+description: 'Install cloudflared and configure SSH through a Cloudflare Tunnel using a service token - zero-trust CI/CD access without exposing port 22'
+author: 'NX1X'
+
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+# =============================================================================
+# Inputs
+# =============================================================================
+inputs:
+  cf-access-client-id:
+    description: 'Cloudflare Access service token ID (used as TUNNEL_SERVICE_TOKEN_ID)'
+    required: true
+
+  cf-access-client-secret:
+    description: 'Cloudflare Access service token secret (used as TUNNEL_SERVICE_TOKEN_SECRET)'
+    required: true
+
+  ssh-private-key:
+    description: 'SSH private key (Ed25519 or RSA) for authenticating to the remote server'
+    required: true
+
+  ssh-host:
+    description: 'SSH hostname routed through Cloudflare Tunnel (e.g. ssh.example.com)'
+    required: true
+
+  ssh-user:
+    description: 'SSH username on the remote server'
+    required: false
+    default: 'deploy'
+
+  cloudflared-version:
+    description: 'cloudflared version to install. Use "latest" or a specific tag like "2025.4.0".'
+    required: false
+    default: 'latest'
+
+  ssh-key-path:
+    description: 'Filesystem path where the SSH private key will be written'
+    required: false
+    default: '~/.ssh/id_ed25519'
+
+  connect-timeout:
+    description: 'SSH ConnectTimeout in seconds (cloudflared handshake can take several seconds)'
+    required: false
+    default: '120'
+
+  server-alive-interval:
+    description: 'SSH ServerAliveInterval in seconds (keep-alive ping frequency)'
+    required: false
+    default: '30'
+
+  test-connection:
+    description: 'Run a test SSH command after setup to verify the tunnel is working'
+    required: false
+    default: 'true'
+
+# =============================================================================
+# Composite action steps
+# =============================================================================
+runs:
+  using: 'composite'
+  steps:
+
+    # -------------------------------------------------------------------------
+    # 1. Install cloudflared
+    # -------------------------------------------------------------------------
+    - name: Install cloudflared
+      shell: bash
+      env:
+        CLOUDFLARED_VERSION: ${{ inputs.cloudflared-version }}
+      run: |
+        # Validate version format (reject anything that isn't "latest" or a version number)
+        if [ "$CLOUDFLARED_VERSION" != "latest" ]; then
+          if ! echo "$CLOUDFLARED_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: Invalid cloudflared-version '$CLOUDFLARED_VERSION' - expected 'latest' or 'X.Y.Z'"
+            exit 1
+          fi
+        fi
+
+        if [ "$CLOUDFLARED_VERSION" = "latest" ]; then
+          DOWNLOAD_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
+        else
+          DOWNLOAD_URL="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+        fi
+        echo "Downloading cloudflared from: $DOWNLOAD_URL"
+        curl -fsSL "$DOWNLOAD_URL" -o /tmp/cloudflared.deb
+        sudo dpkg -i /tmp/cloudflared.deb
+        cloudflared --version
+
+    # -------------------------------------------------------------------------
+    # 2. Create ~/.ssh directory
+    # -------------------------------------------------------------------------
+    - name: Create SSH directory
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+
+    # -------------------------------------------------------------------------
+    # 3. Write SSH private key
+    # -------------------------------------------------------------------------
+    - name: Write SSH private key
+      shell: bash
+      env:
+        INPUT_SSH_PRIVATE_KEY: ${{ inputs.ssh-private-key }}
+        SSH_KEY_PATH: ${{ inputs.ssh-key-path }}
+      run: |
+        KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+        printf '%s\n' "$INPUT_SSH_PRIVATE_KEY" > "$KEY_PATH"
+        chmod 600 "$KEY_PATH"
+
+    # -------------------------------------------------------------------------
+    # 4. Create cloudflared wrapper script with embedded service token credentials
+    #
+    # Why a wrapper script instead of environment variables?
+    #   SSH spawns ProxyCommand as a subprocess. Environment variables written to
+    #   $GITHUB_ENV do not reliably propagate into that subprocess chain. Embedding
+    #   credentials at script-write time is the only approach that works reliably.
+    #
+    # Why TUNNEL_SERVICE_TOKEN_ID / TUNNEL_SERVICE_TOKEN_SECRET?
+    #   These are the actual env var names cloudflared reads
+    #   (source: cmd/cloudflared/access/cmd.go).
+    #   CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET are HTTP *header* names -
+    #   despite being widely documented, they are NOT the env vars cloudflared reads.
+    #   Using the wrong names causes a silent fallback to browser auth ("A browser
+    #   window should have opened"), which fails in CI/CD.
+    # -------------------------------------------------------------------------
+    - name: Create cloudflared wrapper script
+      shell: bash
+      env:
+        CF_TOKEN_ID: ${{ inputs.cf-access-client-id }}
+        CF_TOKEN_SECRET: ${{ inputs.cf-access-client-secret }}
+      run: |
+        {
+          echo '#!/bin/bash'
+          printf 'export TUNNEL_SERVICE_TOKEN_ID=%q\n' "$CF_TOKEN_ID"
+          printf 'export TUNNEL_SERVICE_TOKEN_SECRET=%q\n' "$CF_TOKEN_SECRET"
+          echo 'exec cloudflared access ssh "$@"'
+        } > ~/.cloudflared-ssh
+        chmod 700 ~/.cloudflared-ssh
+
+    # -------------------------------------------------------------------------
+    # 5. Configure SSH to route through the tunnel
+    # -------------------------------------------------------------------------
+    - name: Configure SSH
+      shell: bash
+      env:
+        SSH_HOST: ${{ inputs.ssh-host }}
+        SSH_KEY_PATH: ${{ inputs.ssh-key-path }}
+        CONNECT_TIMEOUT: ${{ inputs.connect-timeout }}
+        SERVER_ALIVE_INTERVAL: ${{ inputs.server-alive-interval }}
+      run: |
+        KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+        {
+          printf 'Host %s\n' "$SSH_HOST"
+          printf '  StrictHostKeyChecking no\n'
+          printf '  IdentityFile %s\n' "$KEY_PATH"
+          printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
+          printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
+          printf '  ServerAliveCountMax 4\n'
+          printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+        } >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+
+    # -------------------------------------------------------------------------
+    # 6. Verify setup (credentials are redacted in output)
+    # -------------------------------------------------------------------------
+    - name: Verify setup
+      shell: bash
+      env:
+        SSH_KEY_PATH: ${{ inputs.ssh-key-path }}
+        SSH_HOST: ${{ inputs.ssh-host }}
+      run: |
+        KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+
+        echo "=== cloudflared ==="
+        cloudflared --version
+        echo ""
+
+        echo "=== SSH key ==="
+        echo "Path:        $KEY_PATH"
+        echo "Lines:       $(wc -l < "$KEY_PATH")"
+        echo "Permissions: $(stat -c '%a' "$KEY_PATH")"
+        echo "Fingerprint: $(ssh-keygen -l -f "$KEY_PATH")"
+        echo ""
+
+        echo "=== Wrapper script (credentials redacted) ==="
+        sed 's/=.*/=<REDACTED>/' ~/.cloudflared-ssh
+        echo "Token ID present: $(grep -c 'TUNNEL_SERVICE_TOKEN_ID=' ~/.cloudflared-ssh)"
+        echo ""
+
+        echo "=== SSH config entry ==="
+        grep -A6 "Host ${SSH_HOST}" ~/.ssh/config || echo "(entry not found - check ssh-host input)"
+
+    # -------------------------------------------------------------------------
+    # 7. Test SSH connection (optional, enabled by default)
+    # -------------------------------------------------------------------------
+    - name: Test SSH connection
+      if: inputs.test-connection == 'true'
+      shell: bash
+      env:
+        SSH_USER: ${{ inputs.ssh-user }}
+        SSH_HOST: ${{ inputs.ssh-host }}
+      run: |
+        echo "Testing SSH: ${SSH_USER}@${SSH_HOST}"
+        ssh -o BatchMode=yes \
+          "${SSH_USER}@${SSH_HOST}" \
+          "echo 'cloudflare-tunnel-ssh-action: connection verified'"
+        echo "Connection test passed."
