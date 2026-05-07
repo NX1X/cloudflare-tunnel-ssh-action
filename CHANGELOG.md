@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Changed
+- License changed from MIT to Apache 2.0
+- Replaced all em dashes with standard hyphens across docs, workflows, and action.yml (history rewritten)
 
 ---
 

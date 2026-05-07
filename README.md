@@ -3,7 +3,7 @@
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Cloudflare%20Tunnel%20SSH-blue?logo=github)](https://github.com/marketplace/actions/cloudflare-tunnel-ssh-setup)
 [![Latest Release](https://img.shields.io/github/v/release/NX1X/cloudflare-tunnel-ssh-action?label=version&color=brightgreen)](https://github.com/NX1X/cloudflare-tunnel-ssh-action/releases/latest)
 [![CI](https://github.com/NX1X/cloudflare-tunnel-ssh-action/actions/workflows/ci.yml/badge.svg)](https://github.com/NX1X/cloudflare-tunnel-ssh-action/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![NXTools](https://img.shields.io/badge/NXTools-Collection-orange)](https://nx1xlab.dev/nxtools)
 ![Views](https://komarev.com/ghpvc/?username=NX1X-cloudflare-tunnel-ssh-action&label=views&color=f66a0a)
 
@@ -79,4 +79,4 @@ This action collects no data. No telemetry, no analytics, no external calls. All
 
 ## License
 
-[MIT](LICENSE) - © 2026 [NX1X](https://github.com/NX1X)
+[Apache 2.0](LICENSE) - © 2026 [NX1X](https://github.com/NX1X)
