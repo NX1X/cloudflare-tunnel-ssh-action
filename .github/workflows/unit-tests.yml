@@ -1252,7 +1252,7 @@ jobs:
           sed -i 's/^          //' ~/.cloudflared-ssh-state
 
           STATE_FILE="$HOME/.cloudflared-ssh-state"
-          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2-)
+          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2- || true)
           if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
             rm -f ~/.ssh/known_hosts
           fi
@@ -1274,7 +1274,7 @@ jobs:
           EOF
           sed -i 's/^          //' ~/.cloudflared-ssh-state
 
-          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2-)
+          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2- || true)
           if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
             rm -f ~/.ssh/known_hosts
           fi
@@ -1293,7 +1293,7 @@ jobs:
           EOF
           sed -i 's/^          //' ~/.cloudflared-ssh-state
 
-          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2-)
+          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2- || true)
           TESTS=$((TESTS + 1))
           if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
             rm -f ~/.ssh/known_hosts
