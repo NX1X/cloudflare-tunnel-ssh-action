@@ -23,11 +23,11 @@ inputs:
     required: true
 
   ssh-host:
-    description: 'SSH hostname routed through Cloudflare Tunnel (e.g. ssh.example.com)'
+    description: 'SSH hostname(s) routed through Cloudflare Tunnel. Space or newline-separated. Prefix with user@ to override ssh-user per host (e.g. "web.example.com admin@db.example.com").'
     required: true
 
   ssh-user:
-    description: 'SSH username on the remote server'
+    description: 'SSH username on the remote server (default for all hosts unless overridden with user@host syntax)'
     required: false
     default: 'deploy'
 
@@ -56,6 +56,37 @@ inputs:
     required: false
     default: 'true'
 
+  known-hosts:
+    description: 'Known hosts entries for strict host key checking. If empty, StrictHostKeyChecking is set to "no".'
+    required: false
+    default: ''
+
+  ssh-extra-config:
+    description: 'Additional SSH config directives to add to each Host block (one per line, e.g. "ForwardAgent yes")'
+    required: false
+    default: ''
+
+  retry-count:
+    description: 'Number of SSH connection test attempts before failing (only applies when test-connection is true)'
+    required: false
+    default: '3'
+
+  retry-delay:
+    description: 'Seconds to wait between retry attempts'
+    required: false
+    default: '5'
+
+# =============================================================================
+# Outputs
+# =============================================================================
+outputs:
+  cloudflared-version:
+    description: 'Installed cloudflared version string (e.g. "2025.4.0")'
+    value: ${{ steps.install-cloudflared.outputs.cloudflared-version }}
+  connection-test-result:
+    description: 'Connection test result: "success", "failed", or "skipped"'
+    value: ${{ steps.test-connection.outputs.connection-test-result || steps.test-connection-skipped.outputs.connection-test-result }}
+
 # =============================================================================
 # Composite action steps
 # =============================================================================
@@ -67,6 +98,7 @@ runs:
     # 1. Install cloudflared
     # -------------------------------------------------------------------------
     - name: Install cloudflared
+      id: install-cloudflared
       shell: bash
       env:
         CLOUDFLARED_VERSION: ${{ inputs.cloudflared-version }}
@@ -87,7 +119,12 @@ runs:
         echo "Downloading cloudflared from: $DOWNLOAD_URL"
         curl -fsSL "$DOWNLOAD_URL" -o /tmp/cloudflared.deb
         sudo dpkg -i /tmp/cloudflared.deb
-        cloudflared --version
+
+        # Capture installed version for output
+        CF_VERSION_RAW=$(cloudflared --version)
+        echo "$CF_VERSION_RAW"
+        CF_VERSION=$(echo "$CF_VERSION_RAW" | sed -n 's/.*version \([^ ]*\).*/\1/p')
+        echo "cloudflared-version=${CF_VERSION}" >> "$GITHUB_OUTPUT"
 
     # -------------------------------------------------------------------------
     # 2. Create ~/.ssh directory
@@ -99,7 +136,20 @@ runs:
         chmod 700 ~/.ssh
 
     # -------------------------------------------------------------------------
-    # 3. Write SSH private key
+    # 3. Write known_hosts file (optional)
+    # -------------------------------------------------------------------------
+    - name: Write known_hosts
+      if: inputs.known-hosts != ''
+      shell: bash
+      env:
+        KNOWN_HOSTS_CONTENT: ${{ inputs.known-hosts }}
+      run: |
+        echo "$KNOWN_HOSTS_CONTENT" > ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+        echo "Wrote $(wc -l < ~/.ssh/known_hosts) known_hosts entries."
+
+    # -------------------------------------------------------------------------
+    # 4. Write SSH private key
     # -------------------------------------------------------------------------
     - name: Write SSH private key
       shell: bash
@@ -112,7 +162,7 @@ runs:
         echo "$INPUT_SSH_PRIVATE_KEY" > "$KEY_PATH"
 
     # -------------------------------------------------------------------------
-    # 4. Create cloudflared wrapper script with embedded service token credentials
+    # 5. Create cloudflared wrapper script with embedded service token credentials
     #
     # Why a wrapper script instead of environment variables?
     #   SSH spawns ProxyCommand as a subprocess. Environment variables written to
@@ -142,27 +192,69 @@ runs:
         chmod 700 ~/.cloudflared-ssh
 
     # -------------------------------------------------------------------------
-    # 5. Configure SSH to route through the tunnel
+    # 6. Configure SSH to route through the tunnel
+    #
+    # Supports multiple hosts (space or newline-separated in ssh-host input).
+    # Each host gets its own Host block. The user@host syntax overrides the
+    # default ssh-user for that specific host.
     # -------------------------------------------------------------------------
     - name: Configure SSH
       shell: bash
       env:
         SSH_HOST: ${{ inputs.ssh-host }}
+        SSH_USER: ${{ inputs.ssh-user }}
         CONNECT_TIMEOUT: ${{ inputs.connect-timeout }}
         SERVER_ALIVE_INTERVAL: ${{ inputs.server-alive-interval }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+        SSH_EXTRA_CONFIG: ${{ inputs.ssh-extra-config }}
       run: |
-        {
-          printf 'Host %s\n' "$SSH_HOST"
-          printf '  StrictHostKeyChecking no\n'
-          printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
-          printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
-          printf '  ServerAliveCountMax 4\n'
-          printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
-        } >> ~/.ssh/config
+        if [ -n "$KNOWN_HOSTS" ]; then
+          HOST_KEY_CHECK="yes"
+        else
+          HOST_KEY_CHECK="no"
+        fi
+
+        # Parse host entries (space or newline separated)
+        HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+
+        # shellcheck disable=SC2086
+        for entry in $HOST_LIST; do
+          # Skip empty entries
+          [ -z "$entry" ] && continue
+
+          # Parse user@host or bare host
+          if [[ "$entry" == *@* ]]; then
+            ENTRY_USER="${entry%%@*}"
+            ENTRY_HOST="${entry#*@}"
+          else
+            ENTRY_USER="$SSH_USER"
+            ENTRY_HOST="$entry"
+          fi
+
+          echo "Configuring SSH for: ${ENTRY_USER}@${ENTRY_HOST}"
+
+          {
+            printf 'Host %s\n' "$ENTRY_HOST"
+            printf '  User %s\n' "$ENTRY_USER"
+            printf '  StrictHostKeyChecking %s\n' "$HOST_KEY_CHECK"
+            printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
+            printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
+            printf '  ServerAliveCountMax 4\n'
+            printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+            # Append custom SSH config directives
+            if [ -n "$SSH_EXTRA_CONFIG" ]; then
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                printf '  %s\n' "$line"
+              done <<< "$SSH_EXTRA_CONFIG"
+            fi
+          } >> ~/.ssh/config
+        done
+
         chmod 600 ~/.ssh/config
 
     # -------------------------------------------------------------------------
-    # 6. Verify setup (credentials are redacted in output)
+    # 7. Verify setup (credentials are redacted in output)
     # -------------------------------------------------------------------------
     - name: Verify setup
       shell: bash
@@ -188,21 +280,133 @@ runs:
         echo "Token ID present: $(grep -c 'TUNNEL_SERVICE_TOKEN_ID=' ~/.cloudflared-ssh)"
         echo ""
 
-        echo "=== SSH config entry ==="
-        grep -A6 "Host ${SSH_HOST}" ~/.ssh/config || echo "(entry not found - check ssh-host input)"
+        if [ -f ~/.ssh/known_hosts ]; then
+          echo "=== Known hosts ==="
+          echo "Entries: $(wc -l < ~/.ssh/known_hosts)"
+          echo "StrictHostKeyChecking: yes"
+          echo ""
+        else
+          echo "=== Known hosts ==="
+          echo "Not configured (StrictHostKeyChecking: no)"
+          echo ""
+        fi
+
+        echo "=== SSH config entries ==="
+        HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+        # shellcheck disable=SC2086
+        for entry in $HOST_LIST; do
+          [ -z "$entry" ] && continue
+          if [[ "$entry" == *@* ]]; then
+            ENTRY_HOST="${entry#*@}"
+          else
+            ENTRY_HOST="$entry"
+          fi
+          echo "--- Host: $ENTRY_HOST ---"
+          grep -A10 "Host ${ENTRY_HOST}" ~/.ssh/config || echo "(entry not found)"
+          echo ""
+        done
 
     # -------------------------------------------------------------------------
-    # 7. Test SSH connection (optional, enabled by default)
+    # 8. Test SSH connection (optional, with retry logic)
     # -------------------------------------------------------------------------
     - name: Test SSH connection
+      id: test-connection
       if: inputs.test-connection == 'true'
       shell: bash
       env:
         SSH_USER: ${{ inputs.ssh-user }}
         SSH_HOST: ${{ inputs.ssh-host }}
+        RETRY_COUNT: ${{ inputs.retry-count }}
+        RETRY_DELAY: ${{ inputs.retry-delay }}
       run: |
-        echo "Testing SSH: ${SSH_USER}@${SSH_HOST}"
-        ssh -o BatchMode=yes \
-          "${SSH_USER}@${SSH_HOST}" \
-          "echo 'cloudflare-tunnel-ssh-action: connection verified'"
-        echo "Connection test passed."
+        # Validate retry-count is a positive integer
+        if ! echo "$RETRY_COUNT" | grep -qE '^[1-9][0-9]*$'; then
+          echo "ERROR: retry-count must be a positive integer, got '$RETRY_COUNT'"
+          exit 1
+        fi
+
+        # Validate retry-delay is a positive integer
+        if ! echo "$RETRY_DELAY" | grep -qE '^[1-9][0-9]*$'; then
+          echo "ERROR: retry-delay must be a positive integer, got '$RETRY_DELAY'"
+          exit 1
+        fi
+
+        HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+        ALL_PASSED=true
+
+        # shellcheck disable=SC2086
+        for entry in $HOST_LIST; do
+          [ -z "$entry" ] && continue
+
+          # Parse user@host or bare host
+          if [[ "$entry" == *@* ]]; then
+            ENTRY_USER="${entry%%@*}"
+            ENTRY_HOST="${entry#*@}"
+          else
+            ENTRY_USER="$SSH_USER"
+            ENTRY_HOST="$entry"
+          fi
+
+          echo "=== Testing ${ENTRY_USER}@${ENTRY_HOST} ==="
+          ATTEMPT=1
+          HOST_OK=false
+          while [ "$ATTEMPT" -le "$RETRY_COUNT" ]; do
+            echo "Attempt ${ATTEMPT}/${RETRY_COUNT}..."
+            if ssh -o BatchMode=yes \
+              "${ENTRY_USER}@${ENTRY_HOST}" \
+              "echo 'cloudflare-tunnel-ssh-action: connection verified'"; then
+              echo "Connection to ${ENTRY_HOST} passed on attempt ${ATTEMPT}."
+              HOST_OK=true
+              break
+            fi
+            if [ "$ATTEMPT" -lt "$RETRY_COUNT" ]; then
+              echo "Attempt ${ATTEMPT} failed. Retrying in ${RETRY_DELAY}s..."
+              sleep "$RETRY_DELAY"
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "$HOST_OK" = false ]; then
+            echo "ERROR: Connection to ${ENTRY_HOST} failed after ${RETRY_COUNT} attempts."
+            ALL_PASSED=false
+          fi
+        done
+
+        if [ "$ALL_PASSED" = true ]; then
+          echo "All connection tests passed."
+          echo "connection-test-result=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "ERROR: One or more connection tests failed."
+          echo "connection-test-result=failed" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+    # -------------------------------------------------------------------------
+    # 9. Set connection test output when test is skipped
+    # -------------------------------------------------------------------------
+    - name: Set connection test output (skipped)
+      id: test-connection-skipped
+      if: inputs.test-connection != 'true'
+      shell: bash
+      run: |
+        echo "connection-test-result=skipped" >> "$GITHUB_OUTPUT"
+
+    # -------------------------------------------------------------------------
+    # 10. Write cleanup state file
+    #
+    # Records paths and hosts so the cleanup sub-action can remove everything
+    # without the user needing to pass the same inputs again.
+    # -------------------------------------------------------------------------
+    - name: Write cleanup state
+      shell: bash
+      env:
+        SSH_KEY_PATH: ${{ inputs.ssh-key-path }}
+        SSH_HOST: ${{ inputs.ssh-host }}
+      run: |
+        KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+        {
+          echo "KEY_PATH=${KEY_PATH}"
+          echo "WRAPPER_PATH=${HOME}/.cloudflared-ssh"
+          echo "SSH_HOST=${SSH_HOST}"
+        } > ~/.cloudflared-ssh-state
+        echo "State file written to ~/.cloudflared-ssh-state"

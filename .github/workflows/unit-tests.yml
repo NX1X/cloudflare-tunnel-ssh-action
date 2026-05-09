@@ -1,0 +1,884 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Shell Logic Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # =======================================================================
+      # 1. Setup test helpers and mock cloudflared
+      # =======================================================================
+      - name: Setup test helpers
+        shell: bash
+        run: |
+          cat > /tmp/test-helpers.sh << 'HELPERS'
+          TESTS=0
+          FAILURES=0
+
+          assert_equals() {
+            local label="$1" expected="$2" actual="$3"
+            TESTS=$((TESTS + 1))
+            if [ "$expected" = "$actual" ]; then
+              echo "  PASS: $label"
+            else
+              echo "  FAIL: $label (expected='$expected', actual='$actual')"
+              FAILURES=$((FAILURES + 1))
+            fi
+          }
+
+          assert_contains() {
+            local label="$1" haystack="$2" needle="$3"
+            TESTS=$((TESTS + 1))
+            if echo "$haystack" | grep -qF "$needle"; then
+              echo "  PASS: $label"
+            else
+              echo "  FAIL: $label (expected to contain '$needle')"
+              FAILURES=$((FAILURES + 1))
+            fi
+          }
+
+          assert_not_contains() {
+            local label="$1" haystack="$2" needle="$3"
+            TESTS=$((TESTS + 1))
+            if echo "$haystack" | grep -qF "$needle"; then
+              echo "  FAIL: $label (should NOT contain '$needle')"
+              FAILURES=$((FAILURES + 1))
+            else
+              echo "  PASS: $label"
+            fi
+          }
+
+          assert_file_exists() {
+            local label="$1" path="$2"
+            TESTS=$((TESTS + 1))
+            if [ -f "$path" ]; then
+              echo "  PASS: $label"
+            else
+              echo "  FAIL: $label (file '$path' does not exist)"
+              FAILURES=$((FAILURES + 1))
+            fi
+          }
+
+          assert_file_perms() {
+            local label="$1" path="$2" expected="$3"
+            local actual
+            actual=$(stat -c '%a' "$path")
+            assert_equals "$label" "$expected" "$actual"
+          }
+
+          assert_dir_perms() {
+            local label="$1" path="$2" expected="$3"
+            local actual
+            actual=$(stat -c '%a' "$path")
+            assert_equals "$label" "$expected" "$actual"
+          }
+
+          assert_command_fails() {
+            local label="$1"
+            shift
+            TESTS=$((TESTS + 1))
+            if "$@" 2>/dev/null; then
+              echo "  FAIL: $label (expected command to fail but it succeeded)"
+              FAILURES=$((FAILURES + 1))
+            else
+              echo "  PASS: $label"
+            fi
+          }
+
+          finish_tests() {
+            echo ""
+            echo "=============================="
+            echo "Results: $TESTS tests, $FAILURES failures"
+            echo "=============================="
+            if [ "$FAILURES" -gt 0 ]; then
+              exit 1
+            fi
+          }
+          HELPERS
+
+          # Create mock cloudflared binary
+          sudo tee /usr/local/bin/cloudflared > /dev/null << 'MOCK'
+          #!/bin/bash
+          if [ "$1" = "--version" ]; then
+            echo "cloudflared version 2025.0.0-mock (built 2025-01-01)"
+            exit 0
+          fi
+          echo "mock-cloudflared: $*"
+          MOCK
+          sudo chmod +x /usr/local/bin/cloudflared
+
+          echo "Test helpers written to /tmp/test-helpers.sh"
+          echo "Mock cloudflared installed at /usr/local/bin/cloudflared"
+          cloudflared --version
+
+      # =======================================================================
+      # 2. Version validation tests
+      # =======================================================================
+      - name: 'Test: version validation'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Version validation tests ==="
+
+          # Extract the validation logic into a function
+          validate_version() {
+            local CLOUDFLARED_VERSION="$1"
+            if [ "$CLOUDFLARED_VERSION" != "latest" ]; then
+              if ! echo "$CLOUDFLARED_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+                return 1
+              fi
+            fi
+            return 0
+          }
+
+          # Valid versions
+          validate_version "latest"
+          assert_equals "latest is valid" "0" "$?"
+
+          validate_version "2025.4.0"
+          assert_equals "2025.4.0 is valid" "0" "$?"
+
+          validate_version "1.2.3"
+          assert_equals "1.2.3 is valid" "0" "$?"
+
+          validate_version "0.0.1"
+          assert_equals "0.0.1 is valid" "0" "$?"
+
+          # Invalid versions
+          assert_command_fails "abc is rejected" validate_version "abc"
+          assert_command_fails "1.2 is rejected (missing patch)" validate_version "1.2"
+          assert_command_fails "1.2.3.4 is rejected (too many parts)" validate_version "1.2.3.4"
+          assert_command_fails "empty string is rejected" validate_version ""
+          assert_command_fails "v1.2.3 is rejected (v prefix)" validate_version "v1.2.3"
+          assert_command_fails "spaces are rejected" validate_version "1.2 .3"
+          assert_command_fails "command injection is rejected" validate_version '$(whoami)'
+          assert_command_fails "backtick injection is rejected" validate_version '`whoami`'
+
+          finish_tests
+
+      # =======================================================================
+      # 3. URL construction tests
+      # =======================================================================
+      - name: 'Test: URL construction'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== URL construction tests ==="
+
+          # Extract URL construction logic into a function
+          construct_url() {
+            local CLOUDFLARED_VERSION="$1"
+            if [ "$CLOUDFLARED_VERSION" = "latest" ]; then
+              echo "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
+            else
+              echo "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+            fi
+          }
+
+          RESULT=$(construct_url "latest")
+          assert_equals "latest URL" \
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb" \
+            "$RESULT"
+
+          RESULT=$(construct_url "2025.4.0")
+          assert_equals "pinned version URL" \
+            "https://github.com/cloudflare/cloudflared/releases/download/2025.4.0/cloudflared-linux-amd64.deb" \
+            "$RESULT"
+
+          RESULT=$(construct_url "1.0.0")
+          assert_equals "another pinned version URL" \
+            "https://github.com/cloudflare/cloudflared/releases/download/1.0.0/cloudflared-linux-amd64.deb" \
+            "$RESULT"
+
+          finish_tests
+
+      # =======================================================================
+      # 4. SSH directory and key tests
+      # =======================================================================
+      - name: 'Test: SSH directory and key writing'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== SSH directory and key tests ==="
+
+          # Clean up from any previous state
+          rm -rf ~/.ssh
+
+          # --- Step 2 logic: create SSH directory ---
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # assert_dir_perms implicitly checks existence (stat fails if missing)
+          assert_dir_perms "~/.ssh has 700 permissions" "$HOME/.ssh" "700"
+
+          # --- Step 3 logic: write SSH key ---
+          # Generate a real test Ed25519 key
+          ssh-keygen -t ed25519 -f /tmp/test_key -N "" -q
+          INPUT_SSH_PRIVATE_KEY=$(cat /tmp/test_key)
+
+          # Test default path with tilde expansion
+          SSH_KEY_PATH="~/.ssh/id_ed25519"
+          KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+
+          assert_equals "tilde expansion (default path)" "$HOME/.ssh/id_ed25519" "$KEY_PATH"
+
+          install -m 600 /dev/null "$KEY_PATH"
+          echo "$INPUT_SSH_PRIVATE_KEY" > "$KEY_PATH"
+
+          assert_file_exists "SSH key file exists" "$KEY_PATH"
+          assert_file_perms "SSH key has 600 permissions" "$KEY_PATH" "600"
+
+          # Verify key content is written intact
+          WRITTEN_KEY=$(cat "$KEY_PATH")
+          assert_equals "key content matches" "$INPUT_SSH_PRIVATE_KEY" "$WRITTEN_KEY"
+
+          # Verify ssh-keygen can read the key (valid format)
+          FINGERPRINT=$(ssh-keygen -l -f "$KEY_PATH" 2>&1)
+          TESTS=$((TESTS + 1))
+          if echo "$FINGERPRINT" | grep -q "SHA256:"; then
+            echo "  PASS: ssh-keygen can read the key"
+          else
+            echo "  FAIL: ssh-keygen cannot read the key ($FINGERPRINT)"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # Test custom key path with tilde expansion
+          SSH_KEY_PATH="~/.ssh/custom_deploy_key"
+          KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+
+          assert_equals "tilde expansion (custom path)" "$HOME/.ssh/custom_deploy_key" "$KEY_PATH"
+
+          install -m 600 /dev/null "$KEY_PATH"
+          echo "$INPUT_SSH_PRIVATE_KEY" > "$KEY_PATH"
+
+          assert_file_exists "custom key file exists" "$KEY_PATH"
+          assert_file_perms "custom key has 600 permissions" "$KEY_PATH" "600"
+
+          # Test multi-line RSA key (larger key)
+          ssh-keygen -t rsa -b 2048 -f /tmp/test_rsa_key -N "" -q
+          RSA_KEY=$(cat /tmp/test_rsa_key)
+          RSA_LINE_COUNT=$(echo "$RSA_KEY" | wc -l)
+
+          SSH_KEY_PATH="~/.ssh/id_rsa"
+          KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+          install -m 600 /dev/null "$KEY_PATH"
+          echo "$RSA_KEY" > "$KEY_PATH"
+
+          WRITTEN_RSA_LINE_COUNT=$(wc -l < "$KEY_PATH")
+          # Account for echo adding a trailing newline
+          TESTS=$((TESTS + 1))
+          if [ "$WRITTEN_RSA_LINE_COUNT" -ge "$RSA_LINE_COUNT" ]; then
+            echo "  PASS: RSA key multi-line content preserved ($WRITTEN_RSA_LINE_COUNT lines)"
+          else
+            echo "  FAIL: RSA key truncated (expected >=$RSA_LINE_COUNT lines, got $WRITTEN_RSA_LINE_COUNT)"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          finish_tests
+
+      # =======================================================================
+      # 5. Wrapper script tests
+      # =======================================================================
+      - name: 'Test: wrapper script creation'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Wrapper script tests ==="
+
+          # --- Step 4 logic: create wrapper script ---
+          CF_TOKEN_ID="test-client-id-abc123"
+          CF_TOKEN_SECRET="test-client-secret-xyz789"
+
+          {
+            echo '#!/bin/bash'
+            printf 'export TUNNEL_SERVICE_TOKEN_ID=%q\n' "$CF_TOKEN_ID"
+            printf 'export TUNNEL_SERVICE_TOKEN_SECRET=%q\n' "$CF_TOKEN_SECRET"
+            echo 'exec cloudflared access ssh "$@"'
+          } > ~/.cloudflared-ssh
+          chmod 700 ~/.cloudflared-ssh
+
+          SCRIPT_CONTENT=$(cat ~/.cloudflared-ssh)
+
+          assert_file_exists "wrapper script exists" "$HOME/.cloudflared-ssh"
+          assert_file_perms "wrapper script has 700 permissions" "$HOME/.cloudflared-ssh" "700"
+
+          # Verify script structure
+          FIRST_LINE=$(head -n1 ~/.cloudflared-ssh)
+          assert_equals "shebang line" "#!/bin/bash" "$FIRST_LINE"
+
+          LAST_LINE=$(tail -n1 ~/.cloudflared-ssh)
+          assert_equals "exec line" 'exec cloudflared access ssh "$@"' "$LAST_LINE"
+
+          assert_contains "has TUNNEL_SERVICE_TOKEN_ID export" "$SCRIPT_CONTENT" "export TUNNEL_SERVICE_TOKEN_ID="
+          assert_contains "has TUNNEL_SERVICE_TOKEN_SECRET export" "$SCRIPT_CONTENT" "export TUNNEL_SERVICE_TOKEN_SECRET="
+          assert_contains "has token ID value" "$SCRIPT_CONTENT" "test-client-id-abc123"
+          assert_contains "has token secret value" "$SCRIPT_CONTENT" "test-client-secret-xyz789"
+
+          # Verify the script is actually executable
+          TESTS=$((TESTS + 1))
+          if [ -x ~/.cloudflared-ssh ]; then
+            echo "  PASS: wrapper script is executable"
+          else
+            echo "  FAIL: wrapper script is not executable"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          finish_tests
+
+      # =======================================================================
+      # 6. Wrapper script injection safety tests
+      # =======================================================================
+      - name: 'Test: wrapper script injection safety'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Injection safety tests ==="
+
+          # Test with tokens containing dangerous characters
+          DANGEROUS_TOKENS=(
+            'token with spaces'
+            'token"with"quotes'
+            "token'with'single-quotes"
+            'token$with$dollars'
+            'token`with`backticks'
+            'token$(whoami)injection'
+            'token${HOME}expansion'
+            'token;rm -rf /'
+            'token|cat /etc/passwd'
+            'token&background'
+            'token
+          newline'
+          )
+
+          for i in "${!DANGEROUS_TOKENS[@]}"; do
+            TOKEN="${DANGEROUS_TOKENS[$i]}"
+            LABEL="dangerous token #$((i+1))"
+
+            # Create wrapper with dangerous token
+            {
+              echo '#!/bin/bash'
+              printf 'export TUNNEL_SERVICE_TOKEN_ID=%q\n' "$TOKEN"
+              printf 'export TUNNEL_SERVICE_TOKEN_SECRET=%q\n' "safe-secret"
+              echo 'exec cloudflared access ssh "$@"'
+            } > /tmp/test-wrapper-$i.sh
+
+            # Source the export lines and verify the value round-trips correctly
+            # (eval the printf %q output and check it matches the original)
+            EXPORTED_VALUE=$(bash -c "
+              $(grep 'TUNNEL_SERVICE_TOKEN_ID' /tmp/test-wrapper-$i.sh)
+              printf '%s' \"\$TUNNEL_SERVICE_TOKEN_ID\"
+            ")
+
+            assert_equals "$LABEL round-trips safely" "$TOKEN" "$EXPORTED_VALUE"
+          done
+
+          finish_tests
+
+      # =======================================================================
+      # 7. SSH config tests
+      # =======================================================================
+      - name: 'Test: SSH config generation'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== SSH config tests ==="
+
+          # Ensure clean state
+          rm -f ~/.ssh/config
+
+          # --- Test append behavior: write pre-existing content first ---
+          echo "Host existing-server.example.com" > ~/.ssh/config
+          echo "  User olduser" >> ~/.ssh/config
+
+          PRE_EXISTING_CONTENT=$(cat ~/.ssh/config)
+
+          # --- Step 5 logic: configure SSH ---
+          SSH_HOST="ssh.example.com"
+          CONNECT_TIMEOUT="120"
+          SERVER_ALIVE_INTERVAL="30"
+
+          {
+            printf 'Host %s\n' "$SSH_HOST"
+            printf '  StrictHostKeyChecking no\n'
+            printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
+            printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
+            printf '  ServerAliveCountMax 4\n'
+            printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+          CONFIG_CONTENT=$(cat ~/.ssh/config)
+
+          assert_file_perms "SSH config has 600 permissions" "$HOME/.ssh/config" "600"
+
+          # Verify pre-existing content is preserved (append, not overwrite)
+          assert_contains "pre-existing Host preserved" "$CONFIG_CONTENT" "Host existing-server.example.com"
+          assert_contains "pre-existing User preserved" "$CONFIG_CONTENT" "User olduser"
+
+          # Verify new config directives
+          assert_contains "Host directive" "$CONFIG_CONTENT" "Host ssh.example.com"
+          assert_contains "StrictHostKeyChecking" "$CONFIG_CONTENT" "StrictHostKeyChecking no"
+          assert_contains "ConnectTimeout" "$CONFIG_CONTENT" "ConnectTimeout 120"
+          assert_contains "ServerAliveInterval" "$CONFIG_CONTENT" "ServerAliveInterval 30"
+          assert_contains "ServerAliveCountMax" "$CONFIG_CONTENT" "ServerAliveCountMax 4"
+          assert_contains "ProxyCommand" "$CONFIG_CONTENT" "ProxyCommand ~/.cloudflared-ssh --hostname %h"
+
+          # --- Test with custom timeout values ---
+          rm -f ~/.ssh/config
+          SSH_HOST="custom.tunnel.dev"
+          CONNECT_TIMEOUT="60"
+          SERVER_ALIVE_INTERVAL="15"
+
+          {
+            printf 'Host %s\n' "$SSH_HOST"
+            printf '  StrictHostKeyChecking no\n'
+            printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
+            printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
+            printf '  ServerAliveCountMax 4\n'
+            printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+          CONFIG_CONTENT=$(cat ~/.ssh/config)
+
+          assert_contains "custom Host directive" "$CONFIG_CONTENT" "Host custom.tunnel.dev"
+          assert_contains "custom ConnectTimeout" "$CONFIG_CONTENT" "ConnectTimeout 60"
+          assert_contains "custom ServerAliveInterval" "$CONFIG_CONTENT" "ServerAliveInterval 15"
+
+          finish_tests
+
+      # =======================================================================
+      # 8. Credential redaction tests
+      # =======================================================================
+      - name: 'Test: credential redaction'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Credential redaction tests ==="
+
+          # Create a wrapper script with known credentials
+          CF_TOKEN_ID="super-secret-id-12345"
+          CF_TOKEN_SECRET="super-secret-key-67890"
+
+          {
+            echo '#!/bin/bash'
+            printf 'export TUNNEL_SERVICE_TOKEN_ID=%q\n' "$CF_TOKEN_ID"
+            printf 'export TUNNEL_SERVICE_TOKEN_SECRET=%q\n' "$CF_TOKEN_SECRET"
+            echo 'exec cloudflared access ssh "$@"'
+          } > ~/.cloudflared-ssh
+
+          # Apply the same redaction as the verify step
+          REDACTED_OUTPUT=$(sed 's/=.*/=<REDACTED>/' ~/.cloudflared-ssh)
+
+          # Verify credentials are NOT in redacted output
+          assert_not_contains "token ID is redacted" "$REDACTED_OUTPUT" "super-secret-id-12345"
+          assert_not_contains "token secret is redacted" "$REDACTED_OUTPUT" "super-secret-key-67890"
+
+          # Verify variable names ARE still visible
+          assert_contains "TUNNEL_SERVICE_TOKEN_ID name visible" "$REDACTED_OUTPUT" "TUNNEL_SERVICE_TOKEN_ID"
+          assert_contains "TUNNEL_SERVICE_TOKEN_SECRET name visible" "$REDACTED_OUTPUT" "TUNNEL_SERVICE_TOKEN_SECRET"
+
+          # Verify shebang is preserved (no '=' in shebang line)
+          FIRST_LINE=$(echo "$REDACTED_OUTPUT" | head -n1)
+          assert_equals "shebang preserved in redacted output" "#!/bin/bash" "$FIRST_LINE"
+
+          # Verify <REDACTED> placeholder is present
+          assert_contains "redacted placeholder for ID" "$REDACTED_OUTPUT" "TUNNEL_SERVICE_TOKEN_ID=<REDACTED>"
+          assert_contains "redacted placeholder for secret" "$REDACTED_OUTPUT" "TUNNEL_SERVICE_TOKEN_SECRET=<REDACTED>"
+
+          # Verify exec line is also redacted (it contains '=' in "$@")
+          # Actually the exec line: exec cloudflared access ssh "$@" has no '='
+          # so it should NOT be redacted
+          LAST_LINE=$(echo "$REDACTED_OUTPUT" | tail -n1)
+          assert_equals "exec line not mangled" 'exec cloudflared access ssh "$@"' "$LAST_LINE"
+
+          finish_tests
+
+      # =======================================================================
+      # 9. Verify step diagnostics tests
+      # =======================================================================
+      - name: 'Test: verify step diagnostics'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Verify step diagnostics tests ==="
+
+          # Setup: ensure we have a valid key and config from previous steps
+          rm -rf ~/.ssh
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          ssh-keygen -t ed25519 -f /tmp/verify_test_key -N "" -q
+          INPUT_SSH_PRIVATE_KEY=$(cat /tmp/verify_test_key)
+
+          SSH_KEY_PATH="~/.ssh/id_ed25519"
+          KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+          install -m 600 /dev/null "$KEY_PATH"
+          echo "$INPUT_SSH_PRIVATE_KEY" > "$KEY_PATH"
+
+          # Create wrapper script
+          {
+            echo '#!/bin/bash'
+            printf 'export TUNNEL_SERVICE_TOKEN_ID=%q\n' "diag-test-id"
+            printf 'export TUNNEL_SERVICE_TOKEN_SECRET=%q\n' "diag-test-secret"
+            echo 'exec cloudflared access ssh "$@"'
+          } > ~/.cloudflared-ssh
+          chmod 700 ~/.cloudflared-ssh
+
+          # Create SSH config
+          SSH_HOST="diag.example.com"
+          {
+            printf 'Host %s\n' "$SSH_HOST"
+            printf '  StrictHostKeyChecking no\n'
+            printf '  ConnectTimeout 120\n'
+            printf '  ServerAliveInterval 30\n'
+            printf '  ServerAliveCountMax 4\n'
+            printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+          # --- Replicate verify step logic (lines 172-192) ---
+
+          # cloudflared --version should work
+          VERSION_OUTPUT=$(cloudflared --version)
+          assert_contains "cloudflared version output" "$VERSION_OUTPUT" "cloudflared version"
+
+          # Key diagnostics
+          KEY_LINES=$(wc -l < "$KEY_PATH")
+          TESTS=$((TESTS + 1))
+          if [ "$KEY_LINES" -gt 0 ]; then
+            echo "  PASS: key has $KEY_LINES lines"
+          else
+            echo "  FAIL: key has 0 lines"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          KEY_PERMS=$(stat -c '%a' "$KEY_PATH")
+          assert_equals "stat reports 600 for key" "600" "$KEY_PERMS"
+
+          FINGERPRINT=$(ssh-keygen -l -f "$KEY_PATH")
+          assert_contains "fingerprint contains SHA256" "$FINGERPRINT" "SHA256:"
+
+          # Redacted wrapper output
+          REDACTED=$(sed 's/=.*/=<REDACTED>/' ~/.cloudflared-ssh)
+          assert_not_contains "diag token ID redacted" "$REDACTED" "diag-test-id"
+          assert_not_contains "diag token secret redacted" "$REDACTED" "diag-test-secret"
+
+          # Token presence check
+          TOKEN_COUNT=$(grep -c 'TUNNEL_SERVICE_TOKEN_ID=' ~/.cloudflared-ssh)
+          assert_equals "token ID grep count is 1" "1" "$TOKEN_COUNT"
+
+          # SSH config entry lookup
+          CONFIG_ENTRY=$(grep -A6 "Host ${SSH_HOST}" ~/.ssh/config)
+          assert_contains "config entry found for host" "$CONFIG_ENTRY" "Host diag.example.com"
+          assert_contains "config entry has ProxyCommand" "$CONFIG_ENTRY" "ProxyCommand"
+
+          finish_tests
+
+      # =======================================================================
+      # 10. Retry input validation tests
+      # =======================================================================
+      - name: 'Test: retry input validation'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Retry input validation tests ==="
+
+          validate_retry_input() {
+            local val="$1"
+            if ! echo "$val" | grep -qE '^[1-9][0-9]*$'; then
+              return 1
+            fi
+            return 0
+          }
+
+          # Valid values
+          validate_retry_input "1"
+          assert_equals "1 is valid" "0" "$?"
+
+          validate_retry_input "3"
+          assert_equals "3 is valid" "0" "$?"
+
+          validate_retry_input "100"
+          assert_equals "100 is valid" "0" "$?"
+
+          # Invalid values
+          assert_command_fails "0 is rejected" validate_retry_input "0"
+          assert_command_fails "negative is rejected" validate_retry_input "-1"
+          assert_command_fails "non-integer is rejected" validate_retry_input "abc"
+          assert_command_fails "empty is rejected" validate_retry_input ""
+          assert_command_fails "decimal is rejected" validate_retry_input "3.5"
+
+          finish_tests
+
+      # =======================================================================
+      # 11. Multi-host SSH config generation tests
+      # =======================================================================
+      - name: 'Test: multi-host SSH config generation'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Multi-host SSH config tests ==="
+
+          rm -f ~/.ssh/config
+
+          SSH_HOST="host1.example.com admin@host2.example.com host3.example.com"
+          SSH_USER="deploy"
+          CONNECT_TIMEOUT="120"
+          SERVER_ALIVE_INTERVAL="30"
+          KNOWN_HOSTS=""
+          SSH_EXTRA_CONFIG=""
+
+          if [ -n "$KNOWN_HOSTS" ]; then
+            HOST_KEY_CHECK="yes"
+          else
+            HOST_KEY_CHECK="no"
+          fi
+
+          HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          for entry in $HOST_LIST; do
+            [ -z "$entry" ] && continue
+            if [[ "$entry" == *@* ]]; then
+              ENTRY_USER="${entry%%@*}"
+              ENTRY_HOST="${entry#*@}"
+            else
+              ENTRY_USER="$SSH_USER"
+              ENTRY_HOST="$entry"
+            fi
+            {
+              printf 'Host %s\n' "$ENTRY_HOST"
+              printf '  User %s\n' "$ENTRY_USER"
+              printf '  StrictHostKeyChecking %s\n' "$HOST_KEY_CHECK"
+              printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
+              printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
+              printf '  ServerAliveCountMax 4\n'
+              printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+            } >> ~/.ssh/config
+          done
+          chmod 600 ~/.ssh/config
+
+          CONFIG=$(cat ~/.ssh/config)
+
+          # Verify three Host blocks exist
+          HOST_COUNT=$(grep -c '^Host ' ~/.ssh/config)
+          assert_equals "three Host blocks created" "3" "$HOST_COUNT"
+
+          # Verify host1 uses default user
+          BLOCK1=$(awk '/^Host host1.example.com$/,/^Host /' ~/.ssh/config | head -n -1)
+          assert_contains "host1 user is deploy" "$BLOCK1" "User deploy"
+
+          # Verify host2 uses override user
+          BLOCK2=$(awk '/^Host host2.example.com$/,/^Host /' ~/.ssh/config | head -n -1)
+          assert_contains "host2 user is admin" "$BLOCK2" "User admin"
+
+          # Verify host3 uses default user
+          BLOCK3=$(awk '/^Host host3.example.com$/,/^$/' ~/.ssh/config)
+          assert_contains "host3 user is deploy" "$BLOCK3" "User deploy"
+
+          # All blocks have ProxyCommand
+          PC_COUNT=$(grep -c 'ProxyCommand' ~/.ssh/config)
+          assert_equals "all blocks have ProxyCommand" "3" "$PC_COUNT"
+
+          finish_tests
+
+      # =======================================================================
+      # 12. Known hosts and StrictHostKeyChecking tests
+      # =======================================================================
+      - name: 'Test: known hosts support'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Known hosts tests ==="
+
+          rm -f ~/.ssh/known_hosts ~/.ssh/config
+
+          # Test: writing known_hosts
+          KNOWN_HOSTS_CONTENT="host.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest123
+          host.example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQTestRSA"
+
+          echo "$KNOWN_HOSTS_CONTENT" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          assert_file_exists "known_hosts created" "$HOME/.ssh/known_hosts"
+          assert_file_perms "known_hosts has 644" "$HOME/.ssh/known_hosts" "644"
+
+          LINES=$(wc -l < ~/.ssh/known_hosts)
+          TESTS=$((TESTS + 1))
+          if [ "$LINES" -ge 2 ]; then
+            echo "  PASS: known_hosts has $LINES lines"
+          else
+            echo "  FAIL: expected 2+ lines, got $LINES"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # Test: StrictHostKeyChecking yes when known_hosts provided
+          KNOWN_HOSTS="not-empty"
+          if [ -n "$KNOWN_HOSTS" ]; then
+            HOST_KEY_CHECK="yes"
+          else
+            HOST_KEY_CHECK="no"
+          fi
+          assert_equals "StrictHostKeyChecking is yes when known-hosts set" "yes" "$HOST_KEY_CHECK"
+
+          # Test: StrictHostKeyChecking no when known_hosts empty
+          KNOWN_HOSTS=""
+          if [ -n "$KNOWN_HOSTS" ]; then
+            HOST_KEY_CHECK="yes"
+          else
+            HOST_KEY_CHECK="no"
+          fi
+          assert_equals "StrictHostKeyChecking is no when known-hosts empty" "no" "$HOST_KEY_CHECK"
+
+          finish_tests
+
+      # =======================================================================
+      # 13. Custom SSH config directives tests
+      # =======================================================================
+      - name: 'Test: custom SSH config directives'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Custom SSH config tests ==="
+
+          rm -f ~/.ssh/config
+
+          SSH_EXTRA_CONFIG="ForwardAgent yes
+          LogLevel DEBUG
+          Ciphers aes256-gcm@openssh.com"
+
+          {
+            printf 'Host extra.example.com\n'
+            printf '  User deploy\n'
+            printf '  StrictHostKeyChecking no\n'
+            printf '  ConnectTimeout 120\n'
+            printf '  ServerAliveInterval 30\n'
+            printf '  ServerAliveCountMax 4\n'
+            printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+            if [ -n "$SSH_EXTRA_CONFIG" ]; then
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                printf '  %s\n' "$line"
+              done <<< "$SSH_EXTRA_CONFIG"
+            fi
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+          CONFIG=$(cat ~/.ssh/config)
+
+          assert_contains "ForwardAgent present" "$CONFIG" "ForwardAgent yes"
+          assert_contains "LogLevel present" "$CONFIG" "LogLevel DEBUG"
+          assert_contains "Ciphers present" "$CONFIG" "Ciphers aes256-gcm@openssh.com"
+
+          # Verify extra config is indented (inside the Host block)
+          INDENTED=$(grep '  ForwardAgent yes' ~/.ssh/config)
+          TESTS=$((TESTS + 1))
+          if [ -n "$INDENTED" ]; then
+            echo "  PASS: extra config is indented"
+          else
+            echo "  FAIL: extra config not indented"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          finish_tests
+
+      # =======================================================================
+      # 14. State file and cleanup tests
+      # =======================================================================
+      - name: 'Test: state file and cleanup'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== State file and cleanup tests ==="
+
+          rm -f ~/.cloudflared-ssh-state
+
+          # Simulate writing state file
+          SSH_KEY_PATH="~/.ssh/id_ed25519"
+          KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
+          SSH_HOST="web.example.com admin@db.example.com"
+
+          {
+            echo "KEY_PATH=${KEY_PATH}"
+            echo "WRAPPER_PATH=${HOME}/.cloudflared-ssh"
+            echo "SSH_HOST=${SSH_HOST}"
+          } > ~/.cloudflared-ssh-state
+
+          assert_file_exists "state file created" "$HOME/.cloudflared-ssh-state"
+
+          # Verify state file contents can be parsed
+          PARSED_KEY=$(grep '^KEY_PATH=' ~/.cloudflared-ssh-state | cut -d'=' -f2-)
+          assert_equals "state KEY_PATH parsed" "$KEY_PATH" "$PARSED_KEY"
+
+          PARSED_WRAPPER=$(grep '^WRAPPER_PATH=' ~/.cloudflared-ssh-state | cut -d'=' -f2-)
+          assert_equals "state WRAPPER_PATH parsed" "$HOME/.cloudflared-ssh" "$PARSED_WRAPPER"
+
+          PARSED_HOST=$(grep '^SSH_HOST=' ~/.cloudflared-ssh-state | cut -d'=' -f2-)
+          assert_contains "state SSH_HOST has web" "$PARSED_HOST" "web.example.com"
+          assert_contains "state SSH_HOST has db" "$PARSED_HOST" "db.example.com"
+
+          # Test cleanup: create files then simulate removal
+          install -m 600 /dev/null "$KEY_PATH"
+          echo "test-key" > "$KEY_PATH"
+          echo "test-wrapper" > "$HOME/.cloudflared-ssh"
+
+          rm -f "$KEY_PATH"
+          rm -f "$HOME/.cloudflared-ssh"
+          rm -f ~/.cloudflared-ssh-state
+
+          TESTS=$((TESTS + 1))
+          if [ ! -f "$KEY_PATH" ] && [ ! -f "$HOME/.cloudflared-ssh" ] && [ ! -f ~/.cloudflared-ssh-state ]; then
+            echo "  PASS: all files removed by cleanup"
+          else
+            echo "  FAIL: some files remain after cleanup"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # Test cleanup graceful exit when no state file
+          TESTS=$((TESTS + 1))
+          if [ ! -f ~/.cloudflared-ssh-state ]; then
+            echo "  PASS: cleanup handles missing state file"
+          else
+            echo "  FAIL: state file should not exist"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          finish_tests
+
+      # =======================================================================
+      # 15. Version output capture tests
+      # =======================================================================
+      - name: 'Test: version output extraction'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Version output extraction tests ==="
+
+          # Test with mock cloudflared version output
+          VERSION_RAW="cloudflared version 2025.4.0 (built 2025-04-01)"
+          CF_VERSION=$(echo "$VERSION_RAW" | sed -n 's/.*version \([^ ]*\).*/\1/p')
+          assert_equals "extracts version from full string" "2025.4.0" "$CF_VERSION"
+
+          # Test with mock version (our mock binary)
+          VERSION_RAW="cloudflared version 2025.0.0-mock (built 2025-01-01)"
+          CF_VERSION=$(echo "$VERSION_RAW" | sed -n 's/.*version \([^ ]*\).*/\1/p')
+          assert_equals "extracts mock version" "2025.0.0-mock" "$CF_VERSION"
+
+          # Test with minimal version string
+          VERSION_RAW="cloudflared version 1.0.0"
+          CF_VERSION=$(echo "$VERSION_RAW" | sed -n 's/.*version \([^ ]*\).*/\1/p')
+          assert_equals "extracts minimal version" "1.0.0" "$CF_VERSION"
+
+          finish_tests

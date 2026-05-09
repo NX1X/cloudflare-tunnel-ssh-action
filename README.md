@@ -41,13 +41,66 @@ New to this? See the **[Setup Guide](GUIDE.md)** for a complete walkthrough.
 | `cf-access-client-id` | **yes** | - | Cloudflare Access service token ID |
 | `cf-access-client-secret` | **yes** | - | Cloudflare Access service token secret |
 | `ssh-private-key` | **yes** | - | SSH private key (Ed25519 or RSA) |
-| `ssh-host` | **yes** | - | SSH hostname routed through the tunnel (e.g. `ssh.example.com`) |
-| `ssh-user` | no | `deploy` | SSH username on the remote server |
+| `ssh-host` | **yes** | - | SSH hostname(s) through the tunnel. Space/newline-separated. Use `user@host` to override user per host. |
+| `ssh-user` | no | `deploy` | SSH username (default for all hosts unless overridden with `user@host`) |
 | `cloudflared-version` | no | `latest` | Pin a specific cloudflared release (e.g. `2025.4.0`) |
 | `ssh-key-path` | no | `~/.ssh/id_ed25519` | Path to write the SSH private key |
 | `connect-timeout` | no | `120` | SSH `ConnectTimeout` in seconds |
 | `server-alive-interval` | no | `30` | SSH `ServerAliveInterval` in seconds |
 | `test-connection` | no | `true` | Run a test SSH command after setup to verify the tunnel |
+| `known-hosts` | no | `''` | Known hosts entries for strict host key checking |
+| `ssh-extra-config` | no | `''` | Additional SSH config directives per host (one per line) |
+| `retry-count` | no | `3` | Number of SSH connection test attempts |
+| `retry-delay` | no | `5` | Seconds between retry attempts |
+
+---
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `cloudflared-version` | Installed cloudflared version (e.g. `2025.4.0`) |
+| `connection-test-result` | `success`, `failed`, or `skipped` |
+
+---
+
+## Multiple Hosts
+
+Connect to several servers in a single action step:
+
+```yaml
+- uses: NX1X/cloudflare-tunnel-ssh-action@v1
+  with:
+    cf-access-client-id:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+    cf-access-client-secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+    ssh-private-key:         ${{ secrets.SSH_PRIVATE_KEY }}
+    ssh-host: 'web.example.com admin@db.example.com staging.example.com'
+    ssh-user: deploy
+
+# All hosts are now reachable
+- run: ssh deploy@web.example.com "systemctl restart app"
+- run: ssh admin@db.example.com "pg_dump mydb > /tmp/backup.sql"
+```
+
+---
+
+## Cleanup
+
+Remove SSH keys, config entries, and the wrapper script after your job completes:
+
+```yaml
+- uses: NX1X/cloudflare-tunnel-ssh-action/cleanup@v1
+  if: always()
+```
+
+Optional: also uninstall cloudflared:
+
+```yaml
+- uses: NX1X/cloudflare-tunnel-ssh-action/cleanup@v1
+  if: always()
+  with:
+    remove-cloudflared: 'true'
+```
 
 ---
 

@@ -8,8 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- SSH connection retry logic: `retry-count` (default: 3) and `retry-delay` (default: 5) inputs for resilient connection testing
+- Known hosts support: `known-hosts` input enables `StrictHostKeyChecking yes` for strict host key verification
+- Multiple hosts: `ssh-host` now accepts space/newline-separated list with optional `user@host` syntax for per-host user override
+- Custom SSH config: `ssh-extra-config` input appends additional directives (e.g. `ForwardAgent yes`) to each Host block
+- Cleanup sub-action: `NX1X/cloudflare-tunnel-ssh-action/cleanup@v1` removes SSH keys, wrapper script, config entries, and known_hosts after job completion
+- Connection status outputs: `cloudflared-version` and `connection-test-result` for use in downstream steps
+- `User` directive in SSH config Host blocks (set per-host via `user@host` or from `ssh-user` input)
+- State file (`~/.cloudflared-ssh-state`) for cleanup action coordination
+- Unit test workflow (`unit-tests.yml`) covering version validation, URL construction, file permissions, wrapper script injection safety, SSH config generation, credential redaction, and verify step diagnostics
+
 ### Changed
-- License changed from MIT to Apache 2.0
+- License changed from MIT to Apache License 2.0 (applies retroactively to all versions)
 - Replaced all em dashes with standard hyphens across docs, workflows, and action.yml (history rewritten)
 
 ---

@@ -131,6 +131,34 @@ Skip the built-in connection test:
 test-connection: 'false'
 ```
 
+Retry connection test (2 attempts, 10s between retries):
+```yaml
+retry-count: '2'
+retry-delay: '10'
+```
+
+Enable strict host key checking:
+```yaml
+known-hosts: |
+  ssh.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+  ssh.example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB...
+```
+
+> **Tip:** Get your server's host keys with `ssh-keyscan ssh.example.com`.
+
+Add custom SSH config directives:
+```yaml
+ssh-extra-config: |
+  ForwardAgent yes
+  LogLevel DEBUG
+```
+
+Connect to multiple hosts:
+```yaml
+ssh-host: 'web.example.com admin@db.example.com staging.example.com'
+```
+Hosts without a `user@` prefix use the `ssh-user` default. Each host gets its own SSH config entry.
+
 Pin the action for reproducibility:
 
 | Style | Tag | Behavior |
@@ -334,6 +362,58 @@ jobs:
           rsync -avz --delete dist/ "deploy@${SERVER_HOST}:~/app/public/"
           ssh "deploy@${SERVER_HOST}" "sudo nginx -s reload"
 ```
+
+---
+
+## Cleanup
+
+The action writes credentials to disk (wrapper script, SSH key). On GitHub-hosted runners these are destroyed when the job ends, but for defense in depth or self-hosted runners, use the cleanup sub-action:
+
+```yaml
+steps:
+  - uses: NX1X/cloudflare-tunnel-ssh-action@v1
+    with: { ... }
+
+  - name: Deploy
+    run: ssh deploy@ssh.example.com "docker compose up -d"
+
+  - uses: NX1X/cloudflare-tunnel-ssh-action/cleanup@v1
+    if: always()
+```
+
+The cleanup action removes:
+- SSH private key
+- Wrapper script (`~/.cloudflared-ssh`)
+- Known hosts file (if created)
+- SSH config entries added by the action
+- State file (`~/.cloudflared-ssh-state`)
+
+To also uninstall cloudflared, set `remove-cloudflared: 'true'`.
+
+---
+
+## Using Outputs
+
+The action exposes two outputs for use in downstream steps:
+
+```yaml
+steps:
+  - uses: NX1X/cloudflare-tunnel-ssh-action@v1
+    id: tunnel
+    with: { ... }
+
+  - name: Show version
+    run: echo "cloudflared ${{ steps.tunnel.outputs.cloudflared-version }}"
+
+  - name: Check test result
+    if: steps.tunnel.outputs.connection-test-result == 'success'
+    run: echo "Tunnel is working"
+```
+
+| Output | Values |
+|--------|--------|
+| `cloudflared-version` | e.g. `2025.4.0` |
+| `connection-test-result` | `success`, `failed`, or `skipped` |
 
 ---
 

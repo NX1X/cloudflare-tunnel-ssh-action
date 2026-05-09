@@ -72,4 +72,22 @@ jobs:
           fi
 
           echo ""
+          echo "=== Checking cleanup/action.yml ==="
+          if [ ! -f cleanup/action.yml ]; then
+            echo "  MISSING cleanup/action.yml"
+            exit 1
+          fi
+          echo "  ok cleanup/action.yml exists"
+
+          for field in name description runs; do
+            if grep -q "^${field}:" cleanup/action.yml; then
+              echo "  ok cleanup ${field}"
+            else
+              echo "  MISSING cleanup ${field}"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+
+          echo ""
           echo "All checks passed."

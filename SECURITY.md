@@ -30,9 +30,13 @@ released as a patch version and credited in the changelog.
 - No telemetry, no analytics, no external calls - all processing stays on your runner
 - Dependencies are monitored via Dependabot for GitHub Actions version updates
 - Releases include source verification via git tags
+- The cleanup sub-action removes sensitive artifacts (SSH keys, wrapper script with embedded credentials) after job completion
+- The state file (`~/.cloudflared-ssh-state`) contains only file paths and hostnames - no credentials
+- Known hosts support enables `StrictHostKeyChecking yes` for strict host key verification
 
 ## Security Changelog
 
 | Date | Change |
 |------|--------|
+| 2026-05-09 | v1.1.0 - Added cleanup sub-action for credential artifact removal, known hosts support for strict host key checking, state file for cleanup coordination |
 | 2026-03-05 | v1.0.0 - Initial release with `chmod 600` keys, `chmod 700` wrapper script, credential redaction in verify step, `env:` masking for all secrets |
