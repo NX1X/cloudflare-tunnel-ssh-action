@@ -163,7 +163,9 @@ jobs:
           assert_command_fails "empty string is rejected" validate_version ""
           assert_command_fails "v1.2.3 is rejected (v prefix)" validate_version "v1.2.3"
           assert_command_fails "spaces are rejected" validate_version "1.2 .3"
+          # shellcheck disable=SC2016
           assert_command_fails "command injection is rejected" validate_version '$(whoami)'
+          # shellcheck disable=SC2016
           assert_command_fails "backtick injection is rejected" validate_version '`whoami`'
 
           finish_tests
@@ -221,7 +223,7 @@ jobs:
           chmod 700 ~/.ssh
 
           # assert_dir_perms implicitly checks existence (stat fails if missing)
-          assert_dir_perms "~/.ssh has 700 permissions" "$HOME/.ssh" "700"
+          assert_dir_perms "\$HOME/.ssh has 700 permissions" "$HOME/.ssh" "700"
 
           # --- Step 3 logic: write SSH key ---
           # Generate a real test Ed25519 key
@@ -229,6 +231,7 @@ jobs:
           INPUT_SSH_PRIVATE_KEY=$(cat /tmp/test_key)
 
           # Test default path with tilde expansion
+          # shellcheck disable=SC2088
           SSH_KEY_PATH="~/.ssh/id_ed25519"
           KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
 
@@ -255,6 +258,7 @@ jobs:
           fi
 
           # Test custom key path with tilde expansion
+          # shellcheck disable=SC2088
           SSH_KEY_PATH="~/.ssh/custom_deploy_key"
           KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
 
@@ -271,6 +275,7 @@ jobs:
           RSA_KEY=$(cat /tmp/test_rsa_key)
           RSA_LINE_COUNT=$(echo "$RSA_KEY" | wc -l)
 
+          # shellcheck disable=SC2088
           SSH_KEY_PATH="~/.ssh/id_rsa"
           KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
           install -m 600 /dev/null "$KEY_PATH"
@@ -347,6 +352,7 @@ jobs:
           echo "=== Injection safety tests ==="
 
           # Test with tokens containing dangerous characters
+          # shellcheck disable=SC2016
           DANGEROUS_TOKENS=(
             'token with spaces'
             'token"with"quotes'
@@ -372,12 +378,12 @@ jobs:
               printf 'export TUNNEL_SERVICE_TOKEN_ID=%q\n' "$TOKEN"
               printf 'export TUNNEL_SERVICE_TOKEN_SECRET=%q\n' "safe-secret"
               echo 'exec cloudflared access ssh "$@"'
-            } > /tmp/test-wrapper-$i.sh
+            } > "/tmp/test-wrapper-${i}.sh"
 
             # Source the export lines and verify the value round-trips correctly
             # (eval the printf %q output and check it matches the original)
             EXPORTED_VALUE=$(bash -c "
-              $(grep 'TUNNEL_SERVICE_TOKEN_ID' /tmp/test-wrapper-$i.sh)
+              $(grep 'TUNNEL_SERVICE_TOKEN_ID' "/tmp/test-wrapper-${i}.sh")
               printf '%s' \"\$TUNNEL_SERVICE_TOKEN_ID\"
             ")
 
@@ -401,8 +407,6 @@ jobs:
           # --- Test append behavior: write pre-existing content first ---
           echo "Host existing-server.example.com" > ~/.ssh/config
           echo "  User olduser" >> ~/.ssh/config
-
-          PRE_EXISTING_CONTENT=$(cat ~/.ssh/config)
 
           # --- Step 5 logic: configure SSH ---
           SSH_HOST="ssh.example.com"
@@ -523,6 +527,7 @@ jobs:
           ssh-keygen -t ed25519 -f /tmp/verify_test_key -N "" -q
           INPUT_SSH_PRIVATE_KEY=$(cat /tmp/verify_test_key)
 
+          # shellcheck disable=SC2088
           SSH_KEY_PATH="~/.ssh/id_ed25519"
           KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
           install -m 600 /dev/null "$KEY_PATH"
@@ -639,12 +644,11 @@ jobs:
           CONNECT_TIMEOUT="120"
           SERVER_ALIVE_INTERVAL="30"
           KNOWN_HOSTS=""
-          SSH_EXTRA_CONFIG=""
 
           if [ -n "$KNOWN_HOSTS" ]; then
             HOST_KEY_CHECK="yes"
           else
-            HOST_KEY_CHECK="no"
+            HOST_KEY_CHECK="accept-new"
           fi
 
           HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
@@ -670,22 +674,20 @@ jobs:
           done
           chmod 600 ~/.ssh/config
 
-          CONFIG=$(cat ~/.ssh/config)
-
           # Verify three Host blocks exist
           HOST_COUNT=$(grep -c '^Host ' ~/.ssh/config)
           assert_equals "three Host blocks created" "3" "$HOST_COUNT"
 
           # Verify host1 uses default user
-          BLOCK1=$(awk '/^Host host1.example.com$/,/^Host /' ~/.ssh/config | head -n -1)
+          BLOCK1=$(sed -n '/^Host host1\.example\.com$/,/^Host /{ /^Host host1/p; /^Host host1/!{/^Host /!p;} }' ~/.ssh/config)
           assert_contains "host1 user is deploy" "$BLOCK1" "User deploy"
 
           # Verify host2 uses override user
-          BLOCK2=$(awk '/^Host host2.example.com$/,/^Host /' ~/.ssh/config | head -n -1)
+          BLOCK2=$(sed -n '/^Host host2\.example\.com$/,/^Host /{ /^Host host2/p; /^Host host2/!{/^Host /!p;} }' ~/.ssh/config)
           assert_contains "host2 user is admin" "$BLOCK2" "User admin"
 
-          # Verify host3 uses default user
-          BLOCK3=$(awk '/^Host host3.example.com$/,/^$/' ~/.ssh/config)
+          # Verify host3 uses default user (last block, goes to EOF)
+          BLOCK3=$(sed -n '/^Host host3\.example\.com$/,$ p' ~/.ssh/config)
           assert_contains "host3 user is deploy" "$BLOCK3" "User deploy"
 
           # All blocks have ProxyCommand
@@ -733,14 +735,14 @@ jobs:
           fi
           assert_equals "StrictHostKeyChecking is yes when known-hosts set" "yes" "$HOST_KEY_CHECK"
 
-          # Test: StrictHostKeyChecking no when known_hosts empty
+          # Test: StrictHostKeyChecking accept-new when known_hosts empty
           KNOWN_HOSTS=""
           if [ -n "$KNOWN_HOSTS" ]; then
             HOST_KEY_CHECK="yes"
           else
-            HOST_KEY_CHECK="no"
+            HOST_KEY_CHECK="accept-new"
           fi
-          assert_equals "StrictHostKeyChecking is no when known-hosts empty" "no" "$HOST_KEY_CHECK"
+          assert_equals "StrictHostKeyChecking is accept-new when known-hosts empty" "accept-new" "$HOST_KEY_CHECK"
 
           finish_tests
 
@@ -806,6 +808,7 @@ jobs:
           rm -f ~/.cloudflared-ssh-state
 
           # Simulate writing state file
+          # shellcheck disable=SC2088
           SSH_KEY_PATH="~/.ssh/id_ed25519"
           KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
           SSH_HOST="web.example.com admin@db.example.com"
