@@ -185,7 +185,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: NX1X/cloudflare-tunnel-ssh-action@v1
         with:
@@ -221,7 +221,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: NX1X/cloudflare-tunnel-ssh-action@v1
         with:
@@ -275,7 +275,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: NX1X/cloudflare-tunnel-ssh-action@v1
         with:
@@ -333,7 +333,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - run: npm ci && npm test && npm run build
@@ -361,6 +361,61 @@ jobs:
         run: |
           rsync -avz --delete dist/ "deploy@${SERVER_HOST}:~/app/public/"
           ssh "deploy@${SERVER_HOST}" "sudo nginx -s reload"
+```
+
+### Multi-Server Deploy with Cleanup
+
+Deploy to multiple servers using per-host users, strict host key checking, retry logic, and cleanup.
+
+```yaml
+name: Multi-Server Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: NX1X/cloudflare-tunnel-ssh-action@v1
+        id: tunnel
+        with:
+          cf-access-client-id:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          cf-access-client-secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          ssh-private-key:         ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh-host: |
+            web.example.com
+            admin@db.example.com
+          ssh-user:                deploy
+          known-hosts:             ${{ secrets.KNOWN_HOSTS }}
+          retry-count:             '5'
+          retry-delay:             '10'
+          ssh-extra-config: |
+            ForwardAgent yes
+
+      - name: Deploy app to web server
+        run: |
+          rsync -avz --delete --exclude='.git' ./ deploy@web.example.com:~/app/
+          ssh deploy@web.example.com "cd ~/app && docker compose up -d"
+
+      - name: Run database migration
+        run: |
+          ssh admin@db.example.com "cd ~/app && ./migrate.sh"
+
+      - name: Verify
+        run: |
+          ssh deploy@web.example.com "curl -sf http://localhost/health"
+
+      - name: Show tunnel info
+        run: |
+          echo "Used cloudflared ${{ steps.tunnel.outputs.cloudflared-version }}"
+          echo "Connection test: ${{ steps.tunnel.outputs.connection-test-result }}"
+
+      - uses: NX1X/cloudflare-tunnel-ssh-action/cleanup@v1
+        if: always()
 ```
 
 ---
@@ -437,6 +492,7 @@ The service token was rejected:
 1. Check `cloudflared` is running: `sudo systemctl status cloudflared`
 2. Verify DNS for `ssh.example.com` points to the tunnel
 3. Confirm `ssh-host` matches the hostname in `/etc/cloudflared/config.yml`
+4. If intermittent, increase retry attempts: `retry-count: '5'` and `retry-delay: '10'`
 
 ### `cloudflared: command not found`
 

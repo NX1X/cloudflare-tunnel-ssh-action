@@ -117,7 +117,6 @@ Ubuntu/Debian only (installs `cloudflared` via `.deb` package):
 ## Documentation
 
 - **[Setup Guide & Examples](GUIDE.md)** - full walkthrough, real-world workflows, and troubleshooting
-- **[Roadmap](ROADMAP.md)** - planned features
 - **[Changelog](CHANGELOG.md)** - version history
 - **[Security](SECURITY.md)** - vulnerability reporting and security practices
 - **[Contributing](CONTRIBUTING.md)** - how to contribute
