@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [1.1.0] - 2026-05-09
 
 ### Added
 - SSH connection retry logic: `retry-count` (default: 3) and `retry-delay` (default: 5) inputs for resilient connection testing

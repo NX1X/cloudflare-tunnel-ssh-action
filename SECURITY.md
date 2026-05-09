@@ -38,5 +38,5 @@ released as a patch version and credited in the changelog.
 
 | Date | Change |
 |------|--------|
-| 2026-05-09 | v1.1.0 - Added cleanup sub-action for credential artifact removal, known hosts support for strict host key checking, state file for cleanup coordination |
+| 2026-05-09 | v1.1.0 - Changed `StrictHostKeyChecking` default from `no` to `accept-new` (MITM prevention), added input validation for `connect-timeout` and `server-alive-interval`, disabled shell glob expansion in host list loops, switched to `grep -F` for fixed-string hostname matching, cleanup sub-action now selectively removes `known_hosts` only if action-created, credentials embedded with `printf '%q'` for safe shell quoting, SSH key created with `install -m 600` (no permission race), verify step redacts by position not value |
 | 2026-03-05 | v1.0.0 - Initial release with `chmod 600` keys, `chmod 700` wrapper script, credential redaction in verify step, `env:` masking for all secrets |
