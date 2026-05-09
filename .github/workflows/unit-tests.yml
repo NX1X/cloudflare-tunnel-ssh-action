@@ -1677,7 +1677,6 @@ jobs:
           INPUT_SSH_PRIVATE_KEY=$(ssh-keygen -t ed25519 -f /tmp/integ_key -N "" -q && cat /tmp/integ_key)
           SSH_HOST="web.example.com admin@db.example.com"
           SSH_USER="deploy"
-          CLOUDFLARED_VERSION="latest"
           # shellcheck disable=SC2088
           SSH_KEY_PATH="~/.ssh/id_ed25519"
           CONNECT_TIMEOUT="120"
