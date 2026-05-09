@@ -1,11 +1,7 @@
 # cloudflare-tunnel-ssh-action
 
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Cloudflare%20Tunnel%20SSH-blue?logo=github)](https://github.com/marketplace/actions/cloudflare-tunnel-ssh-setup)
-[![Latest Release](https://img.shields.io/github/v/release/NX1X/cloudflare-tunnel-ssh-action?label=version&color=brightgreen)](https://github.com/NX1X/cloudflare-tunnel-ssh-action/releases/latest)
-[![CI](https://github.com/NX1X/cloudflare-tunnel-ssh-action/actions/workflows/ci.yml/badge.svg)](https://github.com/NX1X/cloudflare-tunnel-ssh-action/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![NXTools](https://img.shields.io/badge/NXTools-Collection-orange)](https://nx1xlab.dev/nxtools)
-![Views](https://komarev.com/ghpvc/?username=NX1X-cloudflare-tunnel-ssh-action&label=views&color=f66a0a)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Cloudflare%20Tunnel%20SSH-blue?logo=github)](https://github.com/marketplace/actions/cloudflare-tunnel-ssh-setup) [![Latest Release](https://img.shields.io/github/v/release/NX1X/cloudflare-tunnel-ssh-action?label=version&color=brightgreen)](https://github.com/NX1X/cloudflare-tunnel-ssh-action/releases/latest) [![CI](https://github.com/NX1X/cloudflare-tunnel-ssh-action/actions/workflows/ci.yml/badge.svg)](https://github.com/NX1X/cloudflare-tunnel-ssh-action/actions/workflows/ci.yml) [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![NXTools](https://img.shields.io/badge/NXTools-Collection-orange)](https://nx1xlab.dev/nxtools) ![Views](https://komarev.com/ghpvc/?username=NX1X-cloudflare-tunnel-ssh-action&label=views&color=f66a0a)
 
 Set up SSH via Cloudflare Tunnel with `cloudflared` - zero-trust DevOps and CI/CD access without exposing port 22.
 
