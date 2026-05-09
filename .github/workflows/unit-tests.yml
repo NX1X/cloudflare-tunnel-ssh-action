@@ -1368,7 +1368,7 @@ jobs:
             { print }
           ' ~/.ssh/config > /tmp/idem-result
 
-          REMAINING=$(grep -c '^Host' /tmp/idem-result 2>/dev/null || echo "0")
+          REMAINING=$(grep -c '^Host' /tmp/idem-result || true)
           assert_equals "awk removes all duplicates" "0" "$REMAINING"
 
           rm -f ~/.ssh/config /tmp/idem-result
@@ -1550,7 +1550,7 @@ jobs:
             skip { skip=0 }
             { print }
           ' ~/.ssh/config > /tmp/dup-result
-          REMAINING=$(grep -c '^Host' /tmp/dup-result 2>/dev/null || echo "0")
+          REMAINING=$(grep -c '^Host' /tmp/dup-result || true)
           assert_equals "awk removes all duplicates" "0" "$REMAINING"
 
           # --- Same host, different users ---
