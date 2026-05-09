@@ -131,6 +131,34 @@ Skip the built-in connection test:
 test-connection: 'false'
 ```
 
+Retry connection test (2 attempts, 10s between retries):
+```yaml
+retry-count: '2'
+retry-delay: '10'
+```
+
+Enable strict host key checking:
+```yaml
+known-hosts: |
+  ssh.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+  ssh.example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB...
+```
+
+> **Tip:** Get your server's host keys with `ssh-keyscan ssh.example.com`.
+
+Add custom SSH config directives:
+```yaml
+ssh-extra-config: |
+  ForwardAgent yes
+  LogLevel DEBUG
+```
+
+Connect to multiple hosts:
+```yaml
+ssh-host: 'web.example.com admin@db.example.com staging.example.com'
+```
+Hosts without a `user@` prefix use the `ssh-user` default. Each host gets its own SSH config entry.
+
 Pin the action for reproducibility:
 
 | Style | Tag | Behavior |
@@ -157,7 +185,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: NX1X/cloudflare-tunnel-ssh-action@v1
         with:
@@ -193,7 +221,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: NX1X/cloudflare-tunnel-ssh-action@v1
         with:
@@ -247,7 +275,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: NX1X/cloudflare-tunnel-ssh-action@v1
         with:
@@ -305,7 +333,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - run: npm ci && npm test && npm run build
@@ -335,6 +363,113 @@ jobs:
           ssh "deploy@${SERVER_HOST}" "sudo nginx -s reload"
 ```
 
+### Multi-Server Deploy with Cleanup
+
+Deploy to multiple servers using per-host users, strict host key checking, retry logic, and cleanup.
+
+```yaml
+name: Multi-Server Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: NX1X/cloudflare-tunnel-ssh-action@v1
+        id: tunnel
+        with:
+          cf-access-client-id:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          cf-access-client-secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          ssh-private-key:         ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh-host: |
+            web.example.com
+            admin@db.example.com
+          ssh-user:                deploy
+          known-hosts:             ${{ secrets.KNOWN_HOSTS }}
+          retry-count:             '5'
+          retry-delay:             '10'
+          ssh-extra-config: |
+            ForwardAgent yes
+
+      - name: Deploy app to web server
+        run: |
+          rsync -avz --delete --exclude='.git' ./ deploy@web.example.com:~/app/
+          ssh deploy@web.example.com "cd ~/app && docker compose up -d"
+
+      - name: Run database migration
+        run: |
+          ssh admin@db.example.com "cd ~/app && ./migrate.sh"
+
+      - name: Verify
+        run: |
+          ssh deploy@web.example.com "curl -sf http://localhost/health"
+
+      - name: Show tunnel info
+        run: |
+          echo "Used cloudflared ${{ steps.tunnel.outputs.cloudflared-version }}"
+          echo "Connection test: ${{ steps.tunnel.outputs.connection-test-result }}"
+
+      - uses: NX1X/cloudflare-tunnel-ssh-action/cleanup@v1
+        if: always()
+```
+
+---
+
+## Cleanup
+
+The action writes credentials to disk (wrapper script, SSH key). On GitHub-hosted runners these are destroyed when the job ends, but for defense in depth or self-hosted runners, use the cleanup sub-action:
+
+```yaml
+steps:
+  - uses: NX1X/cloudflare-tunnel-ssh-action@v1
+    with: { ... }
+
+  - name: Deploy
+    run: ssh deploy@ssh.example.com "docker compose up -d"
+
+  - uses: NX1X/cloudflare-tunnel-ssh-action/cleanup@v1
+    if: always()
+```
+
+The cleanup action removes:
+- SSH private key
+- Wrapper script (`~/.cloudflared-ssh`)
+- Known hosts file (if created)
+- SSH config entries added by the action
+- State file (`~/.cloudflared-ssh-state`)
+
+To also uninstall cloudflared, set `remove-cloudflared: 'true'`.
+
+---
+
+## Using Outputs
+
+The action exposes two outputs for use in downstream steps:
+
+```yaml
+steps:
+  - uses: NX1X/cloudflare-tunnel-ssh-action@v1
+    id: tunnel
+    with: { ... }
+
+  - name: Show version
+    run: echo "cloudflared ${{ steps.tunnel.outputs.cloudflared-version }}"
+
+  - name: Check test result
+    if: steps.tunnel.outputs.connection-test-result == 'success'
+    run: echo "Tunnel is working"
+```
+
+| Output | Values |
+|--------|--------|
+| `cloudflared-version` | e.g. `2025.4.0` |
+| `connection-test-result` | `success`, `failed`, or `skipped` |
+
 ---
 
 ## Troubleshooting
@@ -357,6 +492,7 @@ The service token was rejected:
 1. Check `cloudflared` is running: `sudo systemctl status cloudflared`
 2. Verify DNS for `ssh.example.com` points to the tunnel
 3. Confirm `ssh-host` matches the hostname in `/etc/cloudflared/config.yml`
+4. If intermittent, increase retry attempts: `retry-count: '5'` and `retry-delay: '10'`
 
 ### `cloudflared: command not found`
 

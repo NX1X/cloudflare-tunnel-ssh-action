@@ -6,11 +6,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [1.1.0] - 2026-05-09
+
+### Added
+- SSH connection retry logic: `retry-count` (default: 3) and `retry-delay` (default: 5) inputs for resilient connection testing
+- Known hosts support: `known-hosts` input enables `StrictHostKeyChecking yes` for strict host key verification
+- Multiple hosts: `ssh-host` now accepts space/newline-separated list with optional `user@host` syntax for per-host user override
+- Custom SSH config: `ssh-extra-config` input appends additional directives (e.g. `ForwardAgent yes`) to each Host block
+- Cleanup sub-action: `NX1X/cloudflare-tunnel-ssh-action/cleanup@v1` removes SSH keys, wrapper script, config entries, and known_hosts after job completion
+- Connection status outputs: `cloudflared-version` and `connection-test-result` for use in downstream steps
+- `User` directive in SSH config Host blocks (set per-host via `user@host` or from `ssh-user` input)
+- State file (`~/.cloudflared-ssh-state`) for cleanup action coordination
+- Unit test workflow (`unit-tests.yml`) covering version validation, URL construction, file permissions, wrapper script injection safety, SSH config generation, credential redaction, and verify step diagnostics
+- Unit tests for `connect-timeout`/`server-alive-interval` numeric validation, cleanup awk Host block removal, retry loop mechanics, glob protection (`set -f`), known_hosts selective cleanup, idempotency, edge case hostname parsing, `ssh-extra-config` boundary cases, duplicate host handling, and action.yml logic drift detection
+- Simulated integration test: full lifecycle (setup -> configure -> verify -> cleanup) with multi-host, known_hosts, extra config, and cleanup verification in a single end-to-end flow
 
 ### Changed
-- License changed from MIT to Apache 2.0
+- License changed from MIT to Apache License 2.0 (applies retroactively to all versions)
 - Replaced all em dashes with standard hyphens across docs, workflows, and action.yml (history rewritten)
+
+### Security
+- Changed `StrictHostKeyChecking` default from `no` to `accept-new` when no `known-hosts` are provided (prevents MITM on repeated connections)
+- Added input validation for `connect-timeout` and `server-alive-interval` (must be non-negative integers)
+- Disabled shell glob expansion (`set -f`) before unquoted word-splitting loops over host lists (prevents unexpected filename expansion)
+- Changed `grep` to `grep -F` (fixed string) in verify step to prevent hostname regex interpretation
+- Cleanup sub-action now only removes `~/.ssh/known_hosts` if the action created it (preserves pre-existing entries from other steps)
+- All new inputs (`known-hosts`, `ssh-extra-config`, `retry-count`, `retry-delay`) routed through `env:` blocks -- no `${{ inputs.* }}` in `run:` blocks
+- SSH private key created with `install -m 600` before writing content (no permission race window)
+- Wrapper script credentials embedded with `printf '%q'` for safe shell quoting (handles special characters in tokens)
+- Verify step redacts credentials by position (`sed 's/=.*/=<REDACTED>/'`) rather than by value (avoids regex/delimiter issues with secret content)
 
 ---
 

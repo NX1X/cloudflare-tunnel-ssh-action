@@ -1,0 +1,96 @@
+name: 'Cloudflare Tunnel SSH Cleanup'
+description: 'Clean up SSH keys, wrapper script, and config entries created by cloudflare-tunnel-ssh-action'
+author: 'NX1X'
+
+branding:
+  icon: 'trash-2'
+  color: 'orange'
+
+inputs:
+  remove-cloudflared:
+    description: 'Also uninstall cloudflared (apt remove)'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Clean up SSH artifacts
+      shell: bash
+      env:
+        REMOVE_CLOUDFLARED: ${{ inputs.remove-cloudflared }}
+      run: |
+        STATE_FILE="$HOME/.cloudflared-ssh-state"
+
+        if [ ! -f "$STATE_FILE" ]; then
+          echo "No state file found at $STATE_FILE - nothing to clean up."
+          echo "This is normal if the main action did not complete successfully."
+          exit 0
+        fi
+
+        echo "Reading state file..."
+
+        # Parse state file safely (no sourcing)
+        KEY_PATH=$(grep '^KEY_PATH=' "$STATE_FILE" | cut -d'=' -f2-)
+        WRAPPER_PATH=$(grep '^WRAPPER_PATH=' "$STATE_FILE" | cut -d'=' -f2-)
+        SSH_HOST_RAW=$(grep '^SSH_HOST=' "$STATE_FILE" | cut -d'=' -f2-)
+
+        # Remove SSH private key
+        if [ -n "$KEY_PATH" ] && [ -f "$KEY_PATH" ]; then
+          rm -f "$KEY_PATH"
+          echo "Removed SSH key: $KEY_PATH"
+        else
+          echo "SSH key not found (already removed or path empty)"
+        fi
+
+        # Remove wrapper script
+        if [ -n "$WRAPPER_PATH" ] && [ -f "$WRAPPER_PATH" ]; then
+          rm -f "$WRAPPER_PATH"
+          echo "Removed wrapper script: $WRAPPER_PATH"
+        else
+          echo "Wrapper script not found (already removed or path empty)"
+        fi
+
+        # Remove known_hosts only if the action created it
+        KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2- || true)
+        if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
+          rm -f ~/.ssh/known_hosts
+          echo "Removed known_hosts (created by this action)"
+        fi
+
+        # Remove Host entries from SSH config
+        if [ -f ~/.ssh/config ] && [ -n "$SSH_HOST_RAW" ]; then
+          HOST_LIST=$(echo "$SSH_HOST_RAW" | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          for entry in $HOST_LIST; do
+            [ -z "$entry" ] && continue
+            if [[ "$entry" == *@* ]]; then
+              ENTRY_HOST="${entry#*@}"
+            else
+              ENTRY_HOST="$entry"
+            fi
+
+            echo "Removing SSH config entry for: $ENTRY_HOST"
+            # Use awk to remove the Host block and all its indented directives
+            awk -v host="$ENTRY_HOST" '
+              /^Host / { if ($2 == host) { skip=1; next } else { skip=0 } }
+              skip && /^[[:space:]]/ { next }
+              skip { skip=0 }
+              { print }
+            ' ~/.ssh/config > ~/.ssh/config.tmp
+            mv ~/.ssh/config.tmp ~/.ssh/config
+          done
+          chmod 600 ~/.ssh/config
+          echo "Cleaned SSH config entries"
+        fi
+
+        # Optionally remove cloudflared
+        if [ "$REMOVE_CLOUDFLARED" = "true" ]; then
+          echo "Uninstalling cloudflared..."
+          sudo apt-get remove -y cloudflared 2>/dev/null || echo "cloudflared not installed or already removed"
+        fi
+
+        # Remove state file last
+        rm -f "$STATE_FILE"
+        echo "Removed state file"
+        echo "Cleanup complete."
