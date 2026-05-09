@@ -23,6 +23,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - License changed from MIT to Apache License 2.0 (applies retroactively to all versions)
 - Replaced all em dashes with standard hyphens across docs, workflows, and action.yml (history rewritten)
 
+### Security
+- Changed `StrictHostKeyChecking` default from `no` to `accept-new` when no `known-hosts` are provided (prevents MITM on repeated connections)
+- Added input validation for `connect-timeout` and `server-alive-interval` (must be non-negative integers)
+- Disabled shell glob expansion (`set -f`) before unquoted word-splitting loops over host lists (prevents unexpected filename expansion)
+- Changed `grep` to `grep -F` (fixed string) in verify step to prevent hostname regex interpretation
+- Cleanup sub-action now only removes `~/.ssh/known_hosts` if the action created it (preserves pre-existing entries from other steps)
+- All new inputs (`known-hosts`, `ssh-extra-config`, `retry-count`, `retry-delay`) routed through `env:` blocks -- no `${{ inputs.* }}` in `run:` blocks
+- SSH private key created with `install -m 600` before writing content (no permission race window)
+- Wrapper script credentials embedded with `printf '%q'` for safe shell quoting (handles special characters in tokens)
+- Verify step redacts credentials by position (`sed 's/=.*/=<REDACTED>/'`) rather than by value (avoids regex/delimiter issues with secret content)
+
 ---
 
 ## [1.0.0] - 2026-05-04

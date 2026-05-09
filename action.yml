@@ -57,7 +57,7 @@ inputs:
     default: 'true'
 
   known-hosts:
-    description: 'Known hosts entries for strict host key checking. If empty, StrictHostKeyChecking is set to "no".'
+    description: 'Known hosts entries for strict host key checking. If empty, StrictHostKeyChecking is set to "accept-new".'
     required: false
     default: ''
 
@@ -208,15 +208,26 @@ runs:
         KNOWN_HOSTS: ${{ inputs.known-hosts }}
         SSH_EXTRA_CONFIG: ${{ inputs.ssh-extra-config }}
       run: |
+        # Validate numeric inputs
+        if ! echo "$CONNECT_TIMEOUT" | grep -qE '^[0-9]+$'; then
+          echo "ERROR: connect-timeout must be a non-negative integer, got '$CONNECT_TIMEOUT'"
+          exit 1
+        fi
+        if ! echo "$SERVER_ALIVE_INTERVAL" | grep -qE '^[0-9]+$'; then
+          echo "ERROR: server-alive-interval must be a non-negative integer, got '$SERVER_ALIVE_INTERVAL'"
+          exit 1
+        fi
+
         if [ -n "$KNOWN_HOSTS" ]; then
           HOST_KEY_CHECK="yes"
         else
-          HOST_KEY_CHECK="no"
+          HOST_KEY_CHECK="accept-new"
         fi
 
         # Parse host entries (space or newline separated)
         HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
 
+        set -f  # Disable glob expansion for unquoted word splitting
         # shellcheck disable=SC2086
         for entry in $HOST_LIST; do
           # Skip empty entries
@@ -250,6 +261,7 @@ runs:
             fi
           } >> ~/.ssh/config
         done
+        set +f  # Re-enable glob expansion
 
         chmod 600 ~/.ssh/config
 
@@ -287,12 +299,13 @@ runs:
           echo ""
         else
           echo "=== Known hosts ==="
-          echo "Not configured (StrictHostKeyChecking: no)"
+          echo "Not configured (StrictHostKeyChecking: accept-new)"
           echo ""
         fi
 
         echo "=== SSH config entries ==="
         HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+        set -f  # Disable glob expansion for unquoted word splitting
         # shellcheck disable=SC2086
         for entry in $HOST_LIST; do
           [ -z "$entry" ] && continue
@@ -302,9 +315,10 @@ runs:
             ENTRY_HOST="$entry"
           fi
           echo "--- Host: $ENTRY_HOST ---"
-          grep -A10 "Host ${ENTRY_HOST}" ~/.ssh/config || echo "(entry not found)"
+          grep -F -A10 "Host ${ENTRY_HOST}" ~/.ssh/config || echo "(entry not found)"
           echo ""
         done
+        set +f
 
     # -------------------------------------------------------------------------
     # 8. Test SSH connection (optional, with retry logic)
@@ -334,6 +348,7 @@ runs:
         HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
         ALL_PASSED=true
 
+        set -f  # Disable glob expansion for unquoted word splitting
         # shellcheck disable=SC2086
         for entry in $HOST_LIST; do
           [ -z "$entry" ] && continue
@@ -371,6 +386,7 @@ runs:
             ALL_PASSED=false
           fi
         done
+        set +f
 
         if [ "$ALL_PASSED" = true ]; then
           echo "All connection tests passed."
@@ -402,11 +418,15 @@ runs:
       env:
         SSH_KEY_PATH: ${{ inputs.ssh-key-path }}
         SSH_HOST: ${{ inputs.ssh-host }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
       run: |
         KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
         {
           echo "KEY_PATH=${KEY_PATH}"
           echo "WRAPPER_PATH=${HOME}/.cloudflared-ssh"
           echo "SSH_HOST=${SSH_HOST}"
+          if [ -n "$KNOWN_HOSTS" ]; then
+            echo "KNOWN_HOSTS_CREATED=true"
+          fi
         } > ~/.cloudflared-ssh-state
         echo "State file written to ~/.cloudflared-ssh-state"

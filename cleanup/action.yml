@@ -51,10 +51,11 @@ runs:
           echo "Wrapper script not found (already removed or path empty)"
         fi
 
-        # Remove known_hosts if present
-        if [ -f ~/.ssh/known_hosts ]; then
+        # Remove known_hosts only if the action created it
+        KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2-)
+        if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
           rm -f ~/.ssh/known_hosts
-          echo "Removed known_hosts"
+          echo "Removed known_hosts (created by this action)"
         fi
 
         # Remove Host entries from SSH config
