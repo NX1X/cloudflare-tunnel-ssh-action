@@ -1645,8 +1645,10 @@ jobs:
           # Extract only run: block content (lines after 'run: |' until next step)
           RUN_BLOCKS=$(awk '/run: \|/,/^    - name:/' "$ACTION_FILE")
           TESTS=$((TESTS + 1))
+          # Build the needle at runtime to avoid GitHub YAML parser seeing ${{ literal
           # shellcheck disable=SC2016
-          EXPR_NEEDLE='${{'" inputs."
+          DOLLAR_BRACE='${'
+          EXPR_NEEDLE="${DOLLAR_BRACE}{ inputs."
           if echo "$RUN_BLOCKS" | grep -qF "$EXPR_NEEDLE"; then
             echo "  FAIL: found direct input expressions in run: block"
             FAILURES=$((FAILURES + 1))
