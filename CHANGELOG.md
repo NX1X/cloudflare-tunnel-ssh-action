@@ -19,6 +19,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - State file (`~/.cloudflared-ssh-state`) for cleanup action coordination
 - Unit test workflow (`unit-tests.yml`) covering version validation, URL construction, file permissions, wrapper script injection safety, SSH config generation, credential redaction, and verify step diagnostics
 - Unit tests for `connect-timeout`/`server-alive-interval` numeric validation, cleanup awk Host block removal, retry loop mechanics, glob protection (`set -f`), known_hosts selective cleanup, idempotency, edge case hostname parsing, `ssh-extra-config` boundary cases, duplicate host handling, and action.yml logic drift detection
+- Simulated integration test: full lifecycle (setup -> configure -> verify -> cleanup) with multi-host, known_hosts, extra config, and cleanup verification in a single end-to-end flow
 
 ### Changed
 - License changed from MIT to Apache License 2.0 (applies retroactively to all versions)
