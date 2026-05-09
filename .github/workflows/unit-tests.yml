@@ -885,3 +885,776 @@ jobs:
           assert_equals "extracts minimal version" "1.0.0" "$CF_VERSION"
 
           finish_tests
+
+      # =======================================================================
+      # 16. connect-timeout and server-alive-interval validation tests
+      # =======================================================================
+      - name: 'Test: connect-timeout and server-alive-interval validation'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Timeout validation tests ==="
+
+          validate_timeout() {
+            local val="$1"
+            if ! echo "$val" | grep -qE '^[0-9]+$'; then
+              return 1
+            fi
+            return 0
+          }
+
+          # Valid values (including 0 — differs from retry-count which rejects 0)
+          validate_timeout "0"
+          assert_equals "0 is valid" "0" "$?"
+          validate_timeout "30"
+          assert_equals "30 is valid" "0" "$?"
+          validate_timeout "120"
+          assert_equals "120 is valid" "0" "$?"
+          validate_timeout "9999"
+          assert_equals "9999 is valid" "0" "$?"
+
+          # Invalid values
+          assert_command_fails "empty string rejected" validate_timeout ""
+          assert_command_fails "negative rejected" validate_timeout "-1"
+          assert_command_fails "decimal rejected" validate_timeout "3.5"
+          assert_command_fails "text rejected" validate_timeout "abc"
+          assert_command_fails "spaces rejected" validate_timeout "1 2"
+          assert_command_fails "mixed rejected" validate_timeout "30s"
+
+          # Verify values flow into SSH config correctly
+          rm -f ~/.ssh/config
+          CONNECT_TIMEOUT="45"
+          SERVER_ALIVE_INTERVAL="10"
+          {
+            printf 'Host test.example.com\n'
+            printf '  ConnectTimeout %s\n' "$CONNECT_TIMEOUT"
+            printf '  ServerAliveInterval %s\n' "$SERVER_ALIVE_INTERVAL"
+          } > ~/.ssh/config
+
+          CONFIG=$(cat ~/.ssh/config)
+          assert_contains "ConnectTimeout 45 in config" "$CONFIG" "ConnectTimeout 45"
+          assert_contains "ServerAliveInterval 10 in config" "$CONFIG" "ServerAliveInterval 10"
+
+          rm -f ~/.ssh/config
+          finish_tests
+
+      # =======================================================================
+      # 17. Cleanup awk Host block removal tests
+      # =======================================================================
+      - name: 'Test: cleanup awk Host block removal'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Cleanup awk tests ==="
+
+          # Helper: run the awk script from cleanup/action.yml
+          remove_host() {
+            local host="$1" input="$2" output="$3"
+            awk -v host="$host" '
+              /^Host / { if ($2 == host) { skip=1; next } else { skip=0 } }
+              skip && /^[[:space:]]/ { next }
+              skip { skip=0 }
+              { print }
+            ' "$input" > "$output"
+          }
+
+          # --- Test 1: Remove middle host ---
+          cat > /tmp/awk-input << 'EOF'
+          Host keep-before.example.com
+            User alice
+            ConnectTimeout 30
+          Host target.example.com
+            User deploy
+            StrictHostKeyChecking accept-new
+            ProxyCommand ~/.cloudflared-ssh --hostname %h
+          Host keep-after.example.com
+            User bob
+            ConnectTimeout 60
+          EOF
+          # Remove leading indentation from heredoc
+          sed -i 's/^          //' /tmp/awk-input
+
+          remove_host "target.example.com" /tmp/awk-input /tmp/awk-output
+          RESULT=$(cat /tmp/awk-output)
+          assert_not_contains "target removed" "$RESULT" "Host target.example.com"
+          assert_not_contains "target directives removed" "$RESULT" "ProxyCommand"
+          assert_contains "before preserved" "$RESULT" "Host keep-before.example.com"
+          assert_contains "before user preserved" "$RESULT" "User alice"
+          assert_contains "after preserved" "$RESULT" "Host keep-after.example.com"
+          assert_contains "after user preserved" "$RESULT" "User bob"
+
+          # --- Test 2: Remove first host ---
+          remove_host "keep-before.example.com" /tmp/awk-input /tmp/awk-output
+          RESULT=$(cat /tmp/awk-output)
+          assert_not_contains "first host removed" "$RESULT" "keep-before.example.com"
+          assert_contains "middle still present" "$RESULT" "Host target.example.com"
+          assert_contains "last still present" "$RESULT" "Host keep-after.example.com"
+
+          # --- Test 3: Remove last host ---
+          remove_host "keep-after.example.com" /tmp/awk-input /tmp/awk-output
+          RESULT=$(cat /tmp/awk-output)
+          assert_not_contains "last host removed" "$RESULT" "keep-after.example.com"
+          assert_contains "first still present" "$RESULT" "Host keep-before.example.com"
+          assert_contains "middle still present" "$RESULT" "Host target.example.com"
+
+          # --- Test 4: Nonexistent host (no-op) ---
+          remove_host "nonexistent.example.com" /tmp/awk-input /tmp/awk-output
+          HOST_COUNT_BEFORE=$(grep -c '^Host ' /tmp/awk-input)
+          HOST_COUNT_AFTER=$(grep -c '^Host ' /tmp/awk-output)
+          assert_equals "no-op preserves all hosts" "$HOST_COUNT_BEFORE" "$HOST_COUNT_AFTER"
+
+          # --- Test 5: Adjacent blocks with no blank line ---
+          cat > /tmp/awk-adjacent << 'EOF'
+          Host first.example.com
+            User alice
+          Host second.example.com
+            User bob
+          EOF
+          sed -i 's/^          //' /tmp/awk-adjacent
+
+          remove_host "first.example.com" /tmp/awk-adjacent /tmp/awk-output
+          RESULT=$(cat /tmp/awk-output)
+          assert_not_contains "adjacent first removed" "$RESULT" "first.example.com"
+          assert_contains "adjacent second intact" "$RESULT" "Host second.example.com"
+          assert_contains "adjacent second user intact" "$RESULT" "User bob"
+
+          rm -f /tmp/awk-input /tmp/awk-output /tmp/awk-adjacent
+          finish_tests
+
+      # =======================================================================
+      # 18. Retry loop behavior tests
+      # =======================================================================
+      - name: 'Test: retry loop behavior'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Retry loop tests ==="
+
+          COUNTER_FILE="/tmp/retry-counter"
+
+          # --- Test 1: Succeeds on first attempt ---
+          echo "0" > "$COUNTER_FILE"
+          cat > /tmp/mock-ssh << 'MOCK'
+          #!/bin/bash
+          COUNT=$(cat /tmp/retry-counter)
+          COUNT=$((COUNT + 1))
+          echo "$COUNT" > /tmp/retry-counter
+          exit 0
+          MOCK
+          sed -i 's/^          //' /tmp/mock-ssh
+          chmod +x /tmp/mock-ssh
+
+          RETRY_COUNT=3
+          RETRY_DELAY=0
+          ATTEMPT=1
+          HOST_OK=false
+          while [ "$ATTEMPT" -le "$RETRY_COUNT" ]; do
+            if /tmp/mock-ssh; then
+              HOST_OK=true
+              break
+            fi
+            if [ "$ATTEMPT" -lt "$RETRY_COUNT" ]; then
+              sleep "$RETRY_DELAY"
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          assert_equals "first-attempt success" "true" "$HOST_OK"
+          assert_equals "only 1 attempt made" "1" "$(cat $COUNTER_FILE)"
+
+          # --- Test 2: Fails twice, succeeds on third ---
+          echo "0" > "$COUNTER_FILE"
+          cat > /tmp/mock-ssh << 'MOCK'
+          #!/bin/bash
+          COUNT=$(cat /tmp/retry-counter)
+          COUNT=$((COUNT + 1))
+          echo "$COUNT" > /tmp/retry-counter
+          if [ "$COUNT" -lt 3 ]; then exit 1; else exit 0; fi
+          MOCK
+          sed -i 's/^          //' /tmp/mock-ssh
+          chmod +x /tmp/mock-ssh
+
+          ATTEMPT=1
+          HOST_OK=false
+          while [ "$ATTEMPT" -le "$RETRY_COUNT" ]; do
+            if /tmp/mock-ssh; then
+              HOST_OK=true
+              break
+            fi
+            if [ "$ATTEMPT" -lt "$RETRY_COUNT" ]; then
+              sleep "$RETRY_DELAY"
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          assert_equals "third-attempt success" "true" "$HOST_OK"
+          assert_equals "3 attempts made" "3" "$(cat $COUNTER_FILE)"
+
+          # --- Test 3: Exhausts all retries ---
+          echo "0" > "$COUNTER_FILE"
+          cat > /tmp/mock-ssh << 'MOCK'
+          #!/bin/bash
+          COUNT=$(cat /tmp/retry-counter)
+          COUNT=$((COUNT + 1))
+          echo "$COUNT" > /tmp/retry-counter
+          exit 1
+          MOCK
+          sed -i 's/^          //' /tmp/mock-ssh
+          chmod +x /tmp/mock-ssh
+
+          ATTEMPT=1
+          HOST_OK=false
+          while [ "$ATTEMPT" -le "$RETRY_COUNT" ]; do
+            if /tmp/mock-ssh; then
+              HOST_OK=true
+              break
+            fi
+            if [ "$ATTEMPT" -lt "$RETRY_COUNT" ]; then
+              sleep "$RETRY_DELAY"
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          assert_equals "exhausted retries" "false" "$HOST_OK"
+          assert_equals "exactly 3 attempts" "3" "$(cat $COUNTER_FILE)"
+
+          # --- Test 4: Single retry ---
+          echo "0" > "$COUNTER_FILE"
+          RETRY_COUNT=1
+          ATTEMPT=1
+          HOST_OK=false
+          while [ "$ATTEMPT" -le "$RETRY_COUNT" ]; do
+            if /tmp/mock-ssh; then
+              HOST_OK=true
+              break
+            fi
+            if [ "$ATTEMPT" -lt "$RETRY_COUNT" ]; then
+              sleep "$RETRY_DELAY"
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          assert_equals "single retry fails" "false" "$HOST_OK"
+          assert_equals "exactly 1 attempt" "1" "$(cat $COUNTER_FILE)"
+
+          # --- Test 5: ALL_PASSED with mixed results ---
+          ALL_PASSED=true
+          # Host 1: always succeeds
+          cat > /tmp/mock-ssh << 'MOCK'
+          #!/bin/bash
+          exit 0
+          MOCK
+          sed -i 's/^          //' /tmp/mock-ssh
+          chmod +x /tmp/mock-ssh
+
+          HOST_OK=false
+          if /tmp/mock-ssh; then HOST_OK=true; fi
+          if [ "$HOST_OK" = false ]; then ALL_PASSED=false; fi
+
+          # Host 2: always fails
+          cat > /tmp/mock-ssh << 'MOCK'
+          #!/bin/bash
+          exit 1
+          MOCK
+          sed -i 's/^          //' /tmp/mock-ssh
+          chmod +x /tmp/mock-ssh
+
+          HOST_OK=false
+          RETRY_COUNT=1
+          ATTEMPT=1
+          while [ "$ATTEMPT" -le "$RETRY_COUNT" ]; do
+            if /tmp/mock-ssh; then HOST_OK=true; break; fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          if [ "$HOST_OK" = false ]; then ALL_PASSED=false; fi
+
+          assert_equals "ALL_PASSED false with mixed results" "false" "$ALL_PASSED"
+
+          rm -f /tmp/mock-ssh "$COUNTER_FILE"
+          finish_tests
+
+      # =======================================================================
+      # 19. Glob protection in host parsing tests
+      # =======================================================================
+      - name: 'Test: glob protection in host parsing'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Glob protection tests ==="
+
+          # Create files that would match glob patterns
+          mkdir -p /tmp/glob-test
+          touch /tmp/glob-test/a.example.com
+          touch /tmp/glob-test/b.example.com
+
+          # --- Test 1: Wildcard hostname with set -f ---
+          rm -f ~/.ssh/config
+          SSH_HOST="*.example.com normal.example.com"
+          SSH_USER="deploy"
+
+          HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+          # Run from the glob-test directory so globs WOULD match files
+          pushd /tmp/glob-test > /dev/null
+          set -f
+          # shellcheck disable=SC2086
+          for entry in $HOST_LIST; do
+            [ -z "$entry" ] && continue
+            printf 'Host %s\n  User %s\n' "$entry" "$SSH_USER" >> ~/.ssh/config
+          done
+          set +f
+          popd > /dev/null
+
+          CONFIG=$(cat ~/.ssh/config)
+          assert_contains "wildcard preserved literally" "$CONFIG" "Host *.example.com"
+          assert_contains "normal host present" "$CONFIG" "Host normal.example.com"
+          HOST_COUNT=$(grep -c '^Host ' ~/.ssh/config)
+          assert_equals "exactly 2 Host blocks" "2" "$HOST_COUNT"
+          assert_not_contains "no glob to a.example.com" "$CONFIG" "Host a.example.com"
+          assert_not_contains "no glob to b.example.com" "$CONFIG" "Host b.example.com"
+
+          # --- Test 2: Question mark hostname ---
+          rm -f ~/.ssh/config
+          SSH_HOST="?.example.com"
+          HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+          pushd /tmp/glob-test > /dev/null
+          set -f
+          # shellcheck disable=SC2086
+          for entry in $HOST_LIST; do
+            [ -z "$entry" ] && continue
+            printf 'Host %s\n' "$entry" >> ~/.ssh/config
+          done
+          set +f
+          popd > /dev/null
+
+          CONFIG=$(cat ~/.ssh/config)
+          assert_contains "? preserved literally" "$CONFIG" "Host ?.example.com"
+          HOST_COUNT=$(grep -c '^Host ' ~/.ssh/config)
+          assert_equals "exactly 1 Host block for ?" "1" "$HOST_COUNT"
+
+          rm -rf /tmp/glob-test ~/.ssh/config
+          finish_tests
+
+      # =======================================================================
+      # 20. Known hosts selective cleanup via state file tests
+      # =======================================================================
+      - name: 'Test: known_hosts selective cleanup via state file'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Known hosts selective cleanup tests ==="
+
+          mkdir -p ~/.ssh
+
+          # --- Test 1: Removed when KNOWN_HOSTS_CREATED=true ---
+          echo "test-host ssh-ed25519 AAAAC3NzaC1" > ~/.ssh/known_hosts
+          cat > ~/.cloudflared-ssh-state << EOF
+          KEY_PATH=$HOME/.ssh/id_ed25519
+          WRAPPER_PATH=$HOME/.cloudflared-ssh
+          SSH_HOST=test.example.com
+          KNOWN_HOSTS_CREATED=true
+          EOF
+          sed -i 's/^          //' ~/.cloudflared-ssh-state
+
+          STATE_FILE="$HOME/.cloudflared-ssh-state"
+          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2-)
+          if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
+            rm -f ~/.ssh/known_hosts
+          fi
+
+          TESTS=$((TESTS + 1))
+          if [ ! -f ~/.ssh/known_hosts ]; then
+            echo "  PASS: known_hosts removed when flag=true"
+          else
+            echo "  FAIL: known_hosts should have been removed"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # --- Test 2: Preserved when flag absent ---
+          echo "pre-existing ssh-ed25519 AAAAC3Nza" > ~/.ssh/known_hosts
+          cat > ~/.cloudflared-ssh-state << EOF
+          KEY_PATH=$HOME/.ssh/id_ed25519
+          WRAPPER_PATH=$HOME/.cloudflared-ssh
+          SSH_HOST=test.example.com
+          EOF
+          sed -i 's/^          //' ~/.cloudflared-ssh-state
+
+          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2-)
+          if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
+            rm -f ~/.ssh/known_hosts
+          fi
+
+          assert_file_exists "known_hosts preserved when flag absent" "$HOME/.ssh/known_hosts"
+          CONTENT=$(cat ~/.ssh/known_hosts)
+          assert_contains "content intact" "$CONTENT" "pre-existing"
+
+          # --- Test 3: Flag present but file missing (no error) ---
+          rm -f ~/.ssh/known_hosts
+          cat > ~/.cloudflared-ssh-state << EOF
+          KEY_PATH=$HOME/.ssh/id_ed25519
+          WRAPPER_PATH=$HOME/.cloudflared-ssh
+          SSH_HOST=test.example.com
+          KNOWN_HOSTS_CREATED=true
+          EOF
+          sed -i 's/^          //' ~/.cloudflared-ssh-state
+
+          KNOWN_HOSTS_CREATED=$(grep '^KNOWN_HOSTS_CREATED=' "$STATE_FILE" | cut -d'=' -f2-)
+          TESTS=$((TESTS + 1))
+          if [ "$KNOWN_HOSTS_CREATED" = "true" ] && [ -f ~/.ssh/known_hosts ]; then
+            rm -f ~/.ssh/known_hosts
+          fi
+          echo "  PASS: no error when flag=true but file missing"
+
+          # --- Test 4: State file write — flag written when known-hosts non-empty ---
+          rm -f ~/.cloudflared-ssh-state
+          KNOWN_HOSTS="some-key-data"
+          {
+            echo "KEY_PATH=$HOME/.ssh/id_ed25519"
+            echo "WRAPPER_PATH=$HOME/.cloudflared-ssh"
+            echo "SSH_HOST=test.example.com"
+            if [ -n "$KNOWN_HOSTS" ]; then
+              echo "KNOWN_HOSTS_CREATED=true"
+            fi
+          } > ~/.cloudflared-ssh-state
+
+          STATE=$(cat ~/.cloudflared-ssh-state)
+          assert_contains "flag written when provided" "$STATE" "KNOWN_HOSTS_CREATED=true"
+
+          # --- Test 5: State file write — flag absent when known-hosts empty ---
+          rm -f ~/.cloudflared-ssh-state
+          KNOWN_HOSTS=""
+          {
+            echo "KEY_PATH=$HOME/.ssh/id_ed25519"
+            echo "WRAPPER_PATH=$HOME/.cloudflared-ssh"
+            echo "SSH_HOST=test.example.com"
+            if [ -n "$KNOWN_HOSTS" ]; then
+              echo "KNOWN_HOSTS_CREATED=true"
+            fi
+          } > ~/.cloudflared-ssh-state
+
+          STATE=$(cat ~/.cloudflared-ssh-state)
+          assert_not_contains "flag absent when empty" "$STATE" "KNOWN_HOSTS_CREATED"
+
+          rm -f ~/.cloudflared-ssh-state ~/.ssh/known_hosts
+          finish_tests
+
+      # =======================================================================
+      # 21. Idempotency of SSH config generation tests
+      # =======================================================================
+      - name: 'Test: idempotency of SSH config generation'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Idempotency tests ==="
+
+          rm -f ~/.ssh/config
+
+          generate_config() {
+            {
+              printf 'Host idempotent.example.com\n'
+              printf '  User deploy\n'
+              printf '  StrictHostKeyChecking accept-new\n'
+              printf '  ConnectTimeout 120\n'
+              printf '  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n'
+            } >> ~/.ssh/config
+          }
+
+          generate_config
+          generate_config
+
+          HOST_COUNT=$(grep -c '^Host idempotent.example.com' ~/.ssh/config)
+          assert_equals "duplicate blocks created on re-run" "2" "$HOST_COUNT"
+
+          # Verify cleanup awk removes ALL duplicates
+          awk -v host="idempotent.example.com" '
+            /^Host / { if ($2 == host) { skip=1; next } else { skip=0 } }
+            skip && /^[[:space:]]/ { next }
+            skip { skip=0 }
+            { print }
+          ' ~/.ssh/config > /tmp/idem-result
+
+          REMAINING=$(grep -c '^Host' /tmp/idem-result 2>/dev/null || echo "0")
+          assert_equals "awk removes all duplicates" "0" "$REMAINING"
+
+          rm -f ~/.ssh/config /tmp/idem-result
+          finish_tests
+
+      # =======================================================================
+      # 22. Edge case hostname parsing tests
+      # =======================================================================
+      - name: 'Test: edge case hostname parsing'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Edge case hostname tests ==="
+
+          parse_entry() {
+            local entry="$1" SSH_USER="$2"
+            local ENTRY_USER ENTRY_HOST
+            if [[ "$entry" == *@* ]]; then
+              ENTRY_USER="${entry%%@*}"
+              ENTRY_HOST="${entry#*@}"
+            else
+              ENTRY_USER="$SSH_USER"
+              ENTRY_HOST="$entry"
+            fi
+            echo "USER=${ENTRY_USER} HOST=${ENTRY_HOST}"
+          }
+
+          # Normal cases
+          RESULT=$(parse_entry "admin@web.example.com" "deploy")
+          assert_contains "user@host: user" "$RESULT" "USER=admin"
+          assert_contains "user@host: host" "$RESULT" "HOST=web.example.com"
+
+          RESULT=$(parse_entry "bare.example.com" "deploy")
+          assert_contains "bare: default user" "$RESULT" "USER=deploy"
+          assert_contains "bare: host" "$RESULT" "HOST=bare.example.com"
+
+          # Malformed: @host (empty user)
+          RESULT=$(parse_entry "@orphan.example.com" "deploy")
+          assert_contains "@host: empty user" "$RESULT" "USER= "
+          assert_contains "@host: host parsed" "$RESULT" "HOST=orphan.example.com"
+
+          # Malformed: user@ (empty host)
+          RESULT=$(parse_entry "admin@" "deploy")
+          assert_contains "user@: user parsed" "$RESULT" "USER=admin"
+          # HOST= is at end of string
+          TESTS=$((TESTS + 1))
+          if echo "$RESULT" | grep -q 'HOST=$'; then
+            echo "  PASS: user@: empty host"
+          else
+            echo "  FAIL: user@: host should be empty (got: $RESULT)"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # Malformed: just @
+          RESULT=$(parse_entry "@" "deploy")
+          TESTS=$((TESTS + 1))
+          if echo "$RESULT" | grep -q 'USER= HOST=$'; then
+            echo "  PASS: @: both empty"
+          else
+            echo "  FAIL: @: expected empty user and host (got: $RESULT)"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # IPv6-style hostname
+          RESULT=$(parse_entry "root@[::1]" "deploy")
+          assert_contains "IPv6: user" "$RESULT" "USER=root"
+          assert_contains "IPv6: host" "$RESULT" "HOST=[::1]"
+
+          # Multiple @ signs
+          RESULT=$(parse_entry "user@host@domain.com" "deploy")
+          assert_contains "multi@: first segment as user" "$RESULT" "USER=user"
+          assert_contains "multi@: rest as host" "$RESULT" "HOST=host@domain.com"
+
+          # Host with port-like suffix
+          RESULT=$(parse_entry "deploy@host.example.com:2222" "deploy")
+          assert_contains "host:port: host includes port" "$RESULT" "HOST=host.example.com:2222"
+
+          finish_tests
+
+      # =======================================================================
+      # 23. ssh-extra-config boundary cases tests
+      # =======================================================================
+      - name: 'Test: ssh-extra-config boundary cases'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Extra config boundary tests ==="
+
+          generate_with_extra() {
+            local SSH_EXTRA_CONFIG="$1"
+            rm -f ~/.ssh/config
+            {
+              printf 'Host test.example.com\n'
+              printf '  User deploy\n'
+              printf '  ConnectTimeout 120\n'
+              if [ -n "$SSH_EXTRA_CONFIG" ]; then
+                while IFS= read -r line; do
+                  [ -z "$line" ] && continue
+                  printf '  %s\n' "$line"
+                done <<< "$SSH_EXTRA_CONFIG"
+              fi
+            } > ~/.ssh/config
+          }
+
+          # --- Test 1: Empty lines skipped ---
+          EXTRA="ForwardAgent yes
+
+          LogLevel DEBUG"
+          generate_with_extra "$EXTRA"
+          CONFIG=$(cat ~/.ssh/config)
+          DIRECTIVE_COUNT=$(grep -c '  ForwardAgent\|  LogLevel' ~/.ssh/config)
+          assert_equals "two directives, blank skipped" "2" "$DIRECTIVE_COUNT"
+          BLANK_INDENTED=$(grep -c '^  $' ~/.ssh/config || true)
+          assert_equals "no blank indented lines" "0" "$BLANK_INDENTED"
+
+          # --- Test 2: Single directive ---
+          generate_with_extra "ForwardAgent yes"
+          CONFIG=$(cat ~/.ssh/config)
+          assert_contains "single directive works" "$CONFIG" "ForwardAgent yes"
+
+          # --- Test 3: Match all injection (documents behavior) ---
+          EXTRA="Match all
+          ForwardAgent yes"
+          generate_with_extra "$EXTRA"
+          CONFIG=$(cat ~/.ssh/config)
+          assert_contains "Match all is written" "$CONFIG" "Match all"
+          assert_contains "ForwardAgent after Match" "$CONFIG" "ForwardAgent yes"
+
+          # --- Test 4: Extra config applied to all hosts in multi-host ---
+          rm -f ~/.ssh/config
+          SSH_EXTRA_CONFIG="ForwardAgent yes"
+          for host in h1.example.com h2.example.com; do
+            {
+              printf 'Host %s\n' "$host"
+              printf '  User deploy\n'
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                printf '  %s\n' "$line"
+              done <<< "$SSH_EXTRA_CONFIG"
+            } >> ~/.ssh/config
+          done
+
+          FA_COUNT=$(grep -c 'ForwardAgent yes' ~/.ssh/config)
+          assert_equals "extra config applied to both hosts" "2" "$FA_COUNT"
+
+          rm -f ~/.ssh/config
+          finish_tests
+
+      # =======================================================================
+      # 24. Duplicate hosts in input tests
+      # =======================================================================
+      - name: 'Test: duplicate hosts in input'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Duplicate host tests ==="
+
+          rm -f ~/.ssh/config
+
+          # --- Same host twice ---
+          SSH_HOST="web.example.com web.example.com"
+          SSH_USER="deploy"
+          HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+          set -f
+          # shellcheck disable=SC2086
+          for entry in $HOST_LIST; do
+            [ -z "$entry" ] && continue
+            printf 'Host %s\n  User %s\n  ProxyCommand ~/.cloudflared-ssh --hostname %%h\n' "$entry" "$SSH_USER" >> ~/.ssh/config
+          done
+          set +f
+
+          HOST_COUNT=$(grep -c '^Host web.example.com' ~/.ssh/config)
+          assert_equals "duplicate creates two blocks" "2" "$HOST_COUNT"
+
+          # Cleanup awk removes both
+          awk -v host="web.example.com" '
+            /^Host / { if ($2 == host) { skip=1; next } else { skip=0 } }
+            skip && /^[[:space:]]/ { next }
+            skip { skip=0 }
+            { print }
+          ' ~/.ssh/config > /tmp/dup-result
+          REMAINING=$(grep -c '^Host' /tmp/dup-result 2>/dev/null || echo "0")
+          assert_equals "awk removes all duplicates" "0" "$REMAINING"
+
+          # --- Same host, different users ---
+          rm -f ~/.ssh/config
+          SSH_HOST="admin@web.example.com deploy@web.example.com"
+          HOST_LIST=$(echo "$SSH_HOST" | tr '\n' ' ')
+          set -f
+          # shellcheck disable=SC2086
+          for entry in $HOST_LIST; do
+            [ -z "$entry" ] && continue
+            if [[ "$entry" == *@* ]]; then
+              ENTRY_USER="${entry%%@*}"
+              ENTRY_HOST="${entry#*@}"
+            else
+              ENTRY_USER="$SSH_USER"
+              ENTRY_HOST="$entry"
+            fi
+            printf 'Host %s\n  User %s\n' "$ENTRY_HOST" "$ENTRY_USER" >> ~/.ssh/config
+          done
+          set +f
+
+          HOST_COUNT=$(grep -c '^Host web.example.com' ~/.ssh/config)
+          assert_equals "same host different users: two blocks" "2" "$HOST_COUNT"
+          assert_contains "admin user present" "$(cat ~/.ssh/config)" "User admin"
+          assert_contains "deploy user present" "$(cat ~/.ssh/config)" "User deploy"
+
+          rm -f ~/.ssh/config /tmp/dup-result
+          finish_tests
+
+      # =======================================================================
+      # 25. action.yml logic consistency check (drift guard)
+      # =======================================================================
+      - name: 'Test: action.yml logic consistency check'
+        shell: bash
+        run: |
+          source /tmp/test-helpers.sh
+          echo "=== Logic consistency tests ==="
+
+          ACTION_FILE="action.yml"
+          CLEANUP_FILE="cleanup/action.yml"
+
+          # --- Verify connect-timeout validation regex ---
+          CT_LINE=$(grep 'CONNECT_TIMEOUT.*grep' "$ACTION_FILE" | head -1)
+          assert_contains "connect-timeout uses ^[0-9]+$ regex" "$CT_LINE" "'^[0-9]"
+
+          # --- Verify retry-count validation regex ---
+          RC_LINE=$(grep 'RETRY_COUNT.*grep' "$ACTION_FILE" | head -1)
+          assert_contains "retry-count uses ^[1-9] regex" "$RC_LINE" "'^[1-9]"
+
+          # --- Verify set -f is present ---
+          SETF_COUNT=$(grep -c 'set -f' "$ACTION_FILE")
+          TESTS=$((TESTS + 1))
+          if [ "$SETF_COUNT" -ge 2 ]; then
+            echo "  PASS: set -f appears $SETF_COUNT times in action.yml"
+          else
+            echo "  FAIL: expected set -f at least 2 times, found $SETF_COUNT"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # --- Verify set +f balances set -f ---
+          SETPF_COUNT=$(grep -c 'set +f' "$ACTION_FILE")
+          assert_equals "set +f balances set -f" "$SETF_COUNT" "$SETPF_COUNT"
+
+          # --- Verify cleanup awk pattern ---
+          AWK_LINE=$(grep 'awk -v host=' "$CLEANUP_FILE")
+          assert_contains "cleanup uses awk -v host=" "$AWK_LINE" "awk -v host="
+
+          # --- Verify KNOWN_HOSTS_CREATED flag in both files ---
+          KH_WRITE=$(grep 'KNOWN_HOSTS_CREATED=true' "$ACTION_FILE")
+          assert_contains "action writes KNOWN_HOSTS_CREATED" "$KH_WRITE" "KNOWN_HOSTS_CREATED=true"
+          KH_READ=$(grep 'KNOWN_HOSTS_CREATED' "$CLEANUP_FILE")
+          assert_contains "cleanup reads KNOWN_HOSTS_CREATED" "$KH_READ" "KNOWN_HOSTS_CREATED"
+
+          # --- Verify user@host parsing uses consistent operators ---
+          # shellcheck disable=SC2016
+          PARSE_USER=$(grep 'entry%%@' "$ACTION_FILE" | head -1)
+          # shellcheck disable=SC2016
+          assert_contains "user parsing uses %%@*" "$PARSE_USER" '${entry%%@*}'
+          # shellcheck disable=SC2016
+          PARSE_HOST=$(grep 'entry#\*@' "$ACTION_FILE" | head -1)
+          # shellcheck disable=SC2016
+          assert_contains "host parsing uses #*@" "$PARSE_HOST" '${entry#*@}'
+
+          # --- Verify wrapper uses TUNNEL_ env vars, not CF_ACCESS_ ---
+          WRAPPER_BLOCK=$(sed -n '/Create cloudflared wrapper/,/chmod 700/p' "$ACTION_FILE")
+          assert_contains "uses TUNNEL_SERVICE_TOKEN_ID" "$WRAPPER_BLOCK" "TUNNEL_SERVICE_TOKEN_ID"
+          assert_contains "uses TUNNEL_SERVICE_TOKEN_SECRET" "$WRAPPER_BLOCK" "TUNNEL_SERVICE_TOKEN_SECRET"
+          assert_not_contains "no CF_ACCESS_CLIENT_ID" "$WRAPPER_BLOCK" "CF_ACCESS_CLIENT_ID"
+
+          # --- Verify no direct input expressions in run: blocks ---
+          # Extract only run: block content (lines after 'run: |' until next step)
+          RUN_BLOCKS=$(awk '/run: \|/,/^    - name:/' "$ACTION_FILE")
+          TESTS=$((TESTS + 1))
+          # shellcheck disable=SC2016
+          EXPR_PATTERN='$\{\{ inputs\.'
+          if echo "$RUN_BLOCKS" | grep -q "$EXPR_PATTERN"; then
+            echo "  FAIL: found direct input expressions in run: block"
+            FAILURES=$((FAILURES + 1))
+          else
+            echo "  PASS: no direct input expressions in run: blocks"
+          fi
+
+          # --- Verify grep -F in verify step ---
+          VERIFY_GREP=$(grep 'grep -F' "$ACTION_FILE")
+          assert_contains "verify step uses grep -F" "$VERIFY_GREP" "grep -F"
+
+          finish_tests

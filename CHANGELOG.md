@@ -18,6 +18,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `User` directive in SSH config Host blocks (set per-host via `user@host` or from `ssh-user` input)
 - State file (`~/.cloudflared-ssh-state`) for cleanup action coordination
 - Unit test workflow (`unit-tests.yml`) covering version validation, URL construction, file permissions, wrapper script injection safety, SSH config generation, credential redaction, and verify step diagnostics
+- Unit tests for `connect-timeout`/`server-alive-interval` numeric validation, cleanup awk Host block removal, retry loop mechanics, glob protection (`set -f`), known_hosts selective cleanup, idempotency, edge case hostname parsing, `ssh-extra-config` boundary cases, duplicate host handling, and action.yml logic drift detection
 
 ### Changed
 - License changed from MIT to Apache License 2.0 (applies retroactively to all versions)
