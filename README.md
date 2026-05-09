@@ -7,6 +7,10 @@
 [![NXTools](https://img.shields.io/badge/NXTools-Collection-orange)](https://nx1xlab.dev/nxtools)
 ![Views](https://komarev.com/ghpvc/?username=NX1X-cloudflare-tunnel-ssh-action&label=views&color=f66a0a)
 
+
+> **Coming in v1.1.0** (currently in testing): multi-server deployment, configurable retry logic, host key verification, custom SSH directives, and a dedicated cleanup action. See [feat/v1.1.0](https://github.com/NX1X/cloudflare-tunnel-ssh-action/tree/feat/v1.1.0) for the work in progress.
+
+
 Install `cloudflared` and configure SSH to connect through a **Cloudflare Tunnel** using a service token - zero-trust CI/CD access without exposing port 22 to the internet.
 
 Part of the [NXTools Collection](https://nx1xlab.dev/nxtools) by [NX1X](https://github.com/NX1X).
