@@ -37,7 +37,10 @@ id_ed25519
 id_ecdsa
 
 # Assets (local reference images/icons, not part of the action)
-assets/
+# Ignore contents but track the published social preview
+assets/*
+!assets/social-preview.svg
+!assets/social-preview.png
 
 # Local dev notes (personal scratch, not for commit)
 docs/
